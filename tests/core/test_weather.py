@@ -237,3 +237,25 @@ def test_weather_runs_are_archived(tmp_path):
     assert archive.stats()["weather"]["count"] == 1
     assert energy(curve(FIRST)) > 0
     archive.close()
+
+
+def test_todays_fog_factor_does_not_touch_tomorrow():
+    from dataclasses import replace
+
+    from pvfc_core.fog import FogMode, FogSettings
+
+    settings = Settings(
+        fog=FogSettings(mode=FogMode.ON),
+        weather=WeatherSettings(mode=WeatherMode.SHADOW, trust=1.0),
+    )
+    engine, _ = run_live(settings, 1.0)
+    now = day_bounds(FIRST, TZ)[0] + timedelta(hours=11)
+    engine.fog = replace(engine.fog, k=0.5, active_since=now)
+    result = engine.result(now)
+    assert result.weather.tomorrow_estimate == pytest.approx(
+        result.tomorrow.estimate * result.weather.tomorrow_factor, rel=1e-6
+    )
+    tomorrow_hours = [h for h in result.weather.hours if h.start >= day_bounds(FIRST, TZ)[1]]
+    assert sum(h.pv_corrected for h in tomorrow_hours) == pytest.approx(
+        result.tomorrow.estimate, rel=1e-6
+    )

@@ -204,9 +204,10 @@ too: the integration follows the new ID.
 | `sensor.pv_forecast_correction_tomorrow` | corrected total tomorrow (kWh) | as *today*, without `actual_so_far` and `fog_factor` |
 | `sensor.pv_forecast_correction_level_factor` | f (day factor) | `status`, `days_used`, `curve` (factor per hour), `sum_actual`, `sum_forecast`, `raw_ratio`, `shrink_weight`, `daily_ratios`, `imported_days`, `computed_at` |
 | `sensor.pv_forecast_correction_fog_factor` | k applied (1 when inactive) | `mode`, `reason`, `gate`, `k_shadow`, `k_morning`, `k_recent`, `base_confidence`, `active_since` |
-| `sensor.pv_forecast_correction_weather_factor` | weather factor for the rest of today | `mode`, `status`, `station`, `station_distance_km`, `issued_at`, `tomorrow_factor`, `rest_today_kwh`, `tomorrow_kwh`, `factors_today`, `factors_tomorrow`, `sunshine_*`, `fog_probability_*`, `days_learned` |
+| `sensor.pv_forecast_correction_weather_factor` | weather factor for the coming hours of sun (rest of today; after sunset, tomorrow) | `mode`, `status`, `station`, `station_distance_km`, `issued_at`, `tomorrow_factor`, `rest_today_kwh`, `tomorrow_kwh`, `factors_today`, `factors_tomorrow`, `sunshine_*`, `fog_probability_*`, `days_learned`, `forecast_hours` (per hour of today and tomorrow: `period_start`, `pv_corrected` and `pv_estimate` in kW without and with the weather factor, `factor`, `sunshine_min`, `fog`, `low_cloud`; not recorded) |
 | `sensor.pv_forecast_correction_error_base` | yesterday's rest-of-day MAE of the base (kWh) | `rest_of_day` per time, `day_error`, `day_ahead_error`, `day_p10_held`, `day_p90_held`, `status` |
 | `sensor.pv_forecast_correction_error_corrected` | the same for the corrected forecast | as above, plus `shadow_*` / `weather_*` while the fog / weather layer is in shadow mode |
+| `sensor.pv_forecast_correction_error_with_weather` | the same for the corrected forecast with the weather factor | as *error base*; long-term statistics make the three comparable over weeks |
 | `sensor.pv_forecast_correction_base_age` | last refresh of the base forecast | `status`, `failures_today` |
 
 Errors are signed *forecast − actual*: positive means the forecast was too high. `status` and

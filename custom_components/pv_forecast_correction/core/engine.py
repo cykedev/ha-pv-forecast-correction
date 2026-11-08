@@ -118,6 +118,22 @@ class FogStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class WeatherHour:
+    """One hour of today or tomorrow: the corrected forecast with and without the weather
+    factor, and what MOSMIX expects."""
+
+    start: datetime
+    pv_corrected: float
+    """Mean power (kW) of the corrected forecast without the weather factor."""
+    pv_estimate: float
+    """The same with the weather factor."""
+    factor: float | None
+    sunshine: float | None
+    fog: float | None
+    low_cloud: float | None
+
+
+@dataclass(frozen=True, slots=True)
 class WeatherStatus:
     """Weather layer as published."""
 
@@ -139,6 +155,7 @@ class WeatherStatus:
     sunshine_tomorrow: float | None = None
     fog_today: float | None = None
     fog_tomorrow: float | None = None
+    hours: tuple[WeatherHour, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -832,13 +849,15 @@ class Corrector:
             return status
         weather = {} if self.weather is None else self.weather.as_dict()
 
-        def summary(points: list[ForecastPoint], start: datetime) -> tuple[Any, ...]:
+        def summary(
+            points: list[ForecastPoint], start: datetime, fog_factor: float
+        ) -> tuple[Any, ...]:
             plain = with_weather = 0.0
             hours: dict[str, float] = {}
             for point in points:
                 end = point.start + INTERVAL
                 hours_left = max(0.0, (end - max(start, point.start)).total_seconds()) / 3600
-                scale = self.level_at(point.start) * self.fog_applied
+                scale = self.level_at(point.start) * fog_factor
                 plain += point.p50 * scale * hours_left
                 with_weather += point.p50 * scale * self.weather_at(point.start) * hours_left
                 hour = floor_to(point.start, HOUR)
@@ -859,10 +878,31 @@ class Corrector:
 
         rest = [p for p in today_base if p.start + INTERVAL > now]
         start = max(now, rest[0].start) if rest else now
-        r_factor, r_estimate, _, r_sun, r_fog = summary(rest, start)
+        r_factor, r_estimate, _, r_sun, r_fog = summary(rest, start, self.fog_applied)
         t_start = tomorrow_base[0].start if tomorrow_base else now
-        t_factor, t_estimate, t_hours, t_sun, t_fog = summary(tomorrow_base, t_start)
-        today_hours = summary(today_base, today_base[0].start)[2] if today_base else {}
+        t_factor, t_estimate, t_hours, t_sun, t_fog = summary(tomorrow_base, t_start, 1.0)
+        today_hours = (
+            summary(today_base, today_base[0].start, self.fog_applied)[2] if today_base else {}
+        )
+        hourly: dict[datetime, list[float]] = {}
+        for points, fog_factor in ((today_base, self.fog_applied), (tomorrow_base, 1.0)):
+            for point in points:
+                kwh = point.p50 * self.level_at(point.start) * fog_factor * INTERVAL_HOURS
+                sums = hourly.setdefault(floor_to(point.start, HOUR), [0.0, 0.0])
+                sums[0] += kwh
+                sums[1] += kwh * self.weather_at(point.start)
+        hours = tuple(
+            WeatherHour(
+                start=hour,
+                pv_corrected=corrected,
+                pv_estimate=with_weather,
+                factor=self._weather_factors.get(hour),
+                sunshine=None if hour not in weather else weather[hour].sunshine,
+                fog=None if hour not in weather else weather[hour].fog,
+                low_cloud=None if hour not in weather else weather[hour].low_cloud,
+            )
+            for hour, (corrected, with_weather) in sorted(hourly.items())
+        )
         return replace_stats(
             status,
             rest_factor=r_factor,
@@ -875,6 +915,7 @@ class Corrector:
             sunshine_tomorrow=t_sun,
             fog_today=r_fog,
             fog_tomorrow=t_fog,
+            hours=hours,
         )
 
     # ------------------------------------------------------------------ persistence

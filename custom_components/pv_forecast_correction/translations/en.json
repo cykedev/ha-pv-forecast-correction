@@ -401,6 +401,9 @@
           },
           "days_learned": {
             "name": "Days learned"
+          },
+          "forecast_hours": {
+            "name": "Forecast per hour with and without weather"
           }
         }
       },
@@ -517,6 +520,44 @@
           },
           "weather_day_p90_held": {
             "name": "Weather: day below P90"
+          }
+        }
+      },
+      "error_weather": {
+        "name": "Error with weather",
+        "state_attributes": {
+          "status": {
+            "name": "Status",
+            "state": {
+              "ok": "Evaluated",
+              "incomplete": "Day incomplete, not evaluated",
+              "no_report": "No finished day yet",
+              "not_scored": "Not scored (weather layer off that day)"
+            }
+          },
+          "date": {
+            "name": "Day"
+          },
+          "actual": {
+            "name": "Produced"
+          },
+          "rest_of_day_mae": {
+            "name": "Rest of day, mean absolute error"
+          },
+          "rest_of_day": {
+            "name": "Rest of day, error per time"
+          },
+          "day_error": {
+            "name": "Day total error (as of 07:00)"
+          },
+          "day_ahead_error": {
+            "name": "Day-ahead error (as of 21:00)"
+          },
+          "day_p10_held": {
+            "name": "Day at or above P10"
+          },
+          "day_p90_held": {
+            "name": "Day at or below P90"
           }
         }
       },

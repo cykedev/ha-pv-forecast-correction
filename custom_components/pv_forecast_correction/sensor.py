@@ -29,7 +29,7 @@ from .core.weather import WeatherMode
 
 PARALLEL_UPDATES = 0
 
-FORECAST_LISTS = frozenset({"detailedForecast", "detailedHourly"})
+FORECAST_LISTS = frozenset({"detailedForecast", "detailedHourly", "forecast_hours"})
 
 
 def _round(value: float | None, digits: int = 3) -> float | None:
@@ -100,8 +100,11 @@ def _error_attributes(report: DayReport | None, variant: str) -> dict[str, Any]:
     if report is None:
         return {"status": "no_report"}
     errors = report.variants.get(variant)
+    status = "ok" if report.complete and errors is not None else "incomplete"
+    if errors is None and variant == WEATHER:
+        status = "not_scored"  # the weather layer was off that day
     attributes: dict[str, Any] = {
-        "status": "ok" if report.complete and errors is not None else "incomplete",
+        "status": status,
         "date": report.day.isoformat(),
         "actual": _round(report.actual_kwh),
     }
@@ -134,13 +137,18 @@ def _weather_status(coordinator: CorrectionCoordinator, result: Result) -> str:
 
 
 def _weather_value(result: Result) -> float | None:
+    """Factor for the coming hours of sun: the rest of today, after sunset tomorrow."""
     weather = result.weather
     if weather is None or weather.mode is WeatherMode.OFF:
         return None
-    return _round(weather.rest_factor if weather.rest_factor is not None else None)
+    if weather.rest_factor is not None:
+        return _round(weather.rest_factor)
+    return _round(weather.tomorrow_factor)
 
 
-def _weather_attributes(coordinator: CorrectionCoordinator, result: Result) -> dict[str, Any]:
+def _weather_attributes(
+    coordinator: CorrectionCoordinator, result: Result, tz: tzinfo
+) -> dict[str, Any]:
     weather = result.weather
     station = coordinator.weather_station
     attributes: dict[str, Any] = {
@@ -167,6 +175,18 @@ def _weather_attributes(coordinator: CorrectionCoordinator, result: Result) -> d
         "fog_probability_rest_today": weather.fog_today,
         "fog_probability_tomorrow": weather.fog_tomorrow,
         "days_learned": weather.typical.days_used if weather.learned else 0,
+        "forecast_hours": [
+            {
+                "period_start": hour.start.astimezone(tz),
+                "pv_estimate": round(hour.pv_estimate, 4),
+                "pv_corrected": round(hour.pv_corrected, 4),
+                "factor": _round(hour.factor),
+                "sunshine_min": None if hour.sunshine is None else round(hour.sunshine * 60),
+                "fog": hour.fog,
+                "low_cloud": hour.low_cloud,
+            }
+            for hour in weather.hours
+        ],
     }
     return attributes
 
@@ -267,7 +287,7 @@ SENSORS: tuple[CorrectionSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=3,
         value=lambda _c, r: _weather_value(r),
-        attributes=lambda c, r, _tz: _weather_attributes(c, r),
+        attributes=lambda c, r, tz: _weather_attributes(c, r, tz),
     ),
     CorrectionSensorDescription(
         key="error_base",
@@ -288,6 +308,16 @@ SENSORS: tuple[CorrectionSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value=lambda _c, r: _error_value(r.report, CORRECTED),
         attributes=lambda _c, r, _tz: _error_attributes(r.report, CORRECTED),
+    ),
+    CorrectionSensorDescription(
+        key="error_weather",
+        translation_key="error_weather",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value=lambda _c, r: _error_value(r.report, WEATHER),
+        attributes=lambda _c, r, _tz: _error_attributes(r.report, WEATHER),
     ),
     CorrectionSensorDescription(
         key="base_age",

@@ -9,6 +9,7 @@
       "weather_factor": { "default": "mdi:weather-partly-cloudy" },
       "error_base": { "default": "mdi:target-variant" },
       "error_corrected": { "default": "mdi:target" },
+      "error_weather": { "default": "mdi:target-account" },
       "base_age": { "default": "mdi:clock-check-outline" }
     }
   },

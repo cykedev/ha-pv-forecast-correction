@@ -131,6 +131,14 @@ async def test_shadow_weather_is_fetched_shown_and_archived(
     assert float(state.state) == pytest.approx(1.0, abs=0.01)  # agrees as usual
     assert state.attributes["factors_tomorrow"]
     assert state.attributes["attribution"].startswith("Weather data: Deutscher Wetterdienst")
+    hours = state.attributes["forecast_hours"]
+    assert len(hours) == 48
+    noon = next(h for h in hours if h["period_start"].hour == 12 and h["period_start"].day == 2)
+    assert noon["pv_estimate"] == pytest.approx(noon["pv_corrected"], rel=0.05)
+    assert noon["fog"] == 5.0
+    error = hass.states.get("sensor.pv_forecast_correction_error_with_weather")
+    assert error is not None
+    assert error.attributes["status"] == "no_report"
     coordinator = weather_entry.runtime_data
     await hass.async_block_till_done()
     stats = await hass.async_add_executor_job(coordinator.archive.stats)

@@ -401,6 +401,9 @@
           },
           "days_learned": {
             "name": "Gelernte Tage"
+          },
+          "forecast_hours": {
+            "name": "Prognose je Stunde mit und ohne Wetter"
           }
         }
       },
@@ -517,6 +520,44 @@
           },
           "weather_day_p90_held": {
             "name": "Wetter: Tag unter P90"
+          }
+        }
+      },
+      "error_weather": {
+        "name": "Fehler mit Wetter",
+        "state_attributes": {
+          "status": {
+            "name": "Status",
+            "state": {
+              "ok": "Ausgewertet",
+              "incomplete": "Tag unvollständig, nicht ausgewertet",
+              "no_report": "Noch kein abgeschlossener Tag",
+              "not_scored": "Nicht bewertet (Wetter-Schicht an dem Tag aus)"
+            }
+          },
+          "date": {
+            "name": "Tag"
+          },
+          "actual": {
+            "name": "Erzeugt"
+          },
+          "rest_of_day_mae": {
+            "name": "Rest des Tages, mittlerer absoluter Fehler"
+          },
+          "rest_of_day": {
+            "name": "Rest des Tages, Fehler je Uhrzeit"
+          },
+          "day_error": {
+            "name": "Fehler Tagessumme (Stand 07:00)"
+          },
+          "day_ahead_error": {
+            "name": "Fehler Vortag (Stand 21:00)"
+          },
+          "day_p10_held": {
+            "name": "Tag mindestens P10"
+          },
+          "day_p90_held": {
+            "name": "Tag höchstens P90"
           }
         }
       },
