@@ -1,0 +1,18 @@
+{
+  "entity": {
+    "sensor": {
+      "today": { "default": "mdi:solar-power-variant" },
+      "remaining_today": { "default": "mdi:solar-power-variant-outline" },
+      "tomorrow": { "default": "mdi:weather-sunny" },
+      "level_factor": { "default": "mdi:tune-vertical" },
+      "fog_factor": { "default": "mdi:weather-fog" },
+      "error_base": { "default": "mdi:target-variant" },
+      "error_corrected": { "default": "mdi:target" },
+      "base_age": { "default": "mdi:clock-check-outline" }
+    }
+  },
+  "services": {
+    "export": { "service": "mdi:file-export-outline" },
+    "reset": { "service": "mdi:restore" }
+  }
+}

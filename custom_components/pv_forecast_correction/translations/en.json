@@ -1,0 +1,462 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Correct a PV forecast",
+        "description": "Pick the forecast to correct and the sensor that measures what your panels produce. The forecast keeps its shape; only its level is adjusted from the measured production. More settings are in the options after setup.",
+        "data": {
+          "name": "Name",
+          "forecast_today": "Forecast today",
+          "forecast_tomorrow": "Forecast tomorrow",
+          "actual_energy": "Production (energy)",
+          "actual_power": "Production (power)",
+          "curtailment": "Curtailment"
+        },
+        "data_description": {
+          "name": "Name of the device; the sensors are named after it.",
+          "forecast_today": "Sensor with a forecast list in the Solcast format (attribute detailedForecast or detailedHourly), e.g. Solcast's \"Forecast today\".",
+          "forecast_tomorrow": "The same for tomorrow. Needed by consumers that plan the night.",
+          "actual_energy": "Energy meter of the PV production in kWh (may reset daily). Preferred. Use either this or power sensors.",
+          "actual_power": "One or more PV power sensors; they are added up and integrated. Use either these or an energy meter.",
+          "curtailment": "Optional: on while the output is limited (export limit, derating). Those intervals are left out of every ratio."
+        }
+      }
+    },
+    "error": {
+      "entity_not_found": "This entity does not exist.",
+      "invalid_forecast": "This entity has no forecast list in the Solcast format (detailedForecast or detailedHourly with period_start and pv_estimate).",
+      "same_forecast": "Today and tomorrow must be different entities.",
+      "actual_missing": "Select an energy meter or at least one power sensor for the production.",
+      "actual_both": "Select either an energy meter or power sensors, not both."
+    },
+    "abort": {
+      "already_configured": "This forecast is already corrected by another entry."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "PV Forecast Correction",
+        "description": "Changes take effect immediately; the learned history is kept.",
+        "sections": {
+          "inputs": {
+            "name": "Inputs",
+            "description": "Forecast to correct and measured production.",
+            "data": {
+              "forecast_today": "Forecast today",
+              "forecast_tomorrow": "Forecast tomorrow",
+              "actual_energy": "Production (energy)",
+              "actual_power": "Production (power)",
+              "curtailment": "Curtailment"
+            },
+            "data_description": {
+              "forecast_today": "Sensor with a forecast list in the Solcast format.",
+              "forecast_tomorrow": "The same for tomorrow.",
+              "actual_energy": "Energy meter in kWh (may reset daily). Either this or power sensors.",
+              "actual_power": "PV power sensors, added up. Either these or an energy meter.",
+              "curtailment": "On while the output is limited; those intervals are not learned from."
+            }
+          },
+          "level": {
+            "name": "Level factor",
+            "description": "Scales the whole forecast by measured ÷ forecast energy of the last days. The base forecast's own dampening stays untouched; this only removes the remaining bias.",
+            "data": {
+              "level_enabled": "Apply the level factor",
+              "level_days": "Days learned from",
+              "level_shrink_days": "Start-up weight",
+              "level_min": "Lowest factor",
+              "level_max": "Highest factor"
+            },
+            "data_description": {
+              "level_enabled": "Off: the factor is still computed and shown, but not applied.",
+              "level_days": "Number of complete past days in the ratio.",
+              "level_shrink_days": "Days at ratio 1.0 added to the ratio, so a fresh install starts neutral and gets there over about a week.",
+              "level_min": "The factor never goes below this.",
+              "level_max": "The factor never goes above this."
+            }
+          },
+          "fog": {
+            "name": "Fog layer",
+            "description": "On days when a whole morning runs far below a confident forecast (fog, low stratus), scales the rest of the day down by the measured ratio. Shadow mode computes and shows it without changing the forecast.",
+            "data": {
+              "fog_mode": "Mode",
+              "fog_threshold": "Threshold",
+              "fog_min_confidence": "Minimum forecast confidence",
+              "fog_recent_hours": "Recent window",
+              "fog_min_factor": "Lowest factor"
+            },
+            "data_description": {
+              "fog_mode": "Off, shadow (computed and shown only) or on (applied).",
+              "fog_threshold": "The layer opens when the morning and the recent window both produced less than this share of the forecast.",
+              "fog_min_confidence": "Additionally requires the base forecast's P10 ÷ P50 for the day to be at least this (a narrow, confident forecast). 0 switches this condition off.",
+              "fog_recent_hours": "Length of the recent window.",
+              "fog_min_factor": "The fog factor never goes below this."
+            }
+          },
+          "archive": {
+            "name": "Archive",
+            "description": "Keeps every base forecast, the measured energy and the applied factors in a file in the config directory, so any variant can be evaluated later (tools/replay.py).",
+            "data": {
+              "archive_enabled": "Keep an archive",
+              "archive_retention_days": "Keep for"
+            },
+            "data_description": {
+              "archive_enabled": "About 10–20 MB per year.",
+              "archive_retention_days": "Older data is deleted every night."
+            }
+          }
+        }
+      }
+    },
+    "error": {
+      "entity_not_found": "This entity does not exist.",
+      "invalid_forecast": "This entity has no forecast list in the Solcast format.",
+      "same_forecast": "Today and tomorrow must be different entities.",
+      "actual_missing": "Select an energy meter or at least one power sensor for the production.",
+      "actual_both": "Select either an energy meter or power sensors, not both.",
+      "level_bounds": "The lowest level factor must be below the highest."
+    }
+  },
+  "selector": {
+    "fog_mode": {
+      "options": {
+        "off": "Off",
+        "shadow": "Shadow (compute and show only)",
+        "on": "On (apply)"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "today": {
+        "name": "Today",
+        "state_attributes": {
+          "estimate": {
+            "name": "Estimate"
+          },
+          "estimate10": {
+            "name": "Estimate P10"
+          },
+          "estimate90": {
+            "name": "Estimate P90"
+          },
+          "base_estimate": {
+            "name": "Base estimate"
+          },
+          "base_estimate10": {
+            "name": "Base estimate P10"
+          },
+          "base_estimate90": {
+            "name": "Base estimate P90"
+          },
+          "actual_so_far": {
+            "name": "Produced so far"
+          },
+          "level_factor": {
+            "name": "Level factor"
+          },
+          "fog_factor": {
+            "name": "Fog factor"
+          }
+        }
+      },
+      "remaining_today": {
+        "name": "Remaining today",
+        "state_attributes": {
+          "estimate": {
+            "name": "Estimate"
+          },
+          "estimate10": {
+            "name": "Estimate P10"
+          },
+          "estimate90": {
+            "name": "Estimate P90"
+          },
+          "base_estimate": {
+            "name": "Base estimate"
+          },
+          "base_estimate10": {
+            "name": "Base estimate P10"
+          },
+          "base_estimate90": {
+            "name": "Base estimate P90"
+          }
+        }
+      },
+      "tomorrow": {
+        "name": "Tomorrow",
+        "state_attributes": {
+          "estimate": {
+            "name": "Estimate"
+          },
+          "estimate10": {
+            "name": "Estimate P10"
+          },
+          "estimate90": {
+            "name": "Estimate P90"
+          },
+          "base_estimate": {
+            "name": "Base estimate"
+          },
+          "base_estimate10": {
+            "name": "Base estimate P10"
+          },
+          "base_estimate90": {
+            "name": "Base estimate P90"
+          },
+          "level_factor": {
+            "name": "Level factor"
+          }
+        }
+      },
+      "level_factor": {
+        "name": "Level factor",
+        "state_attributes": {
+          "status": {
+            "name": "Status",
+            "state": {
+              "disabled": "Computed, not applied",
+              "no_history": "No complete day yet (neutral)",
+              "learning": "Learning (fewer days than configured)",
+              "learned": "Learned",
+              "clamped": "Limited to the configured range"
+            }
+          },
+          "applied": {
+            "name": "Applied"
+          },
+          "days_used": {
+            "name": "Days used"
+          },
+          "days_wanted": {
+            "name": "Days configured"
+          },
+          "sum_actual": {
+            "name": "Measured energy"
+          },
+          "sum_forecast": {
+            "name": "Forecast energy"
+          },
+          "raw_ratio": {
+            "name": "Measured ÷ forecast"
+          },
+          "shrink_weight": {
+            "name": "Start-up weight"
+          },
+          "clamped": {
+            "name": "Limited"
+          },
+          "computed_at": {
+            "name": "Computed at"
+          },
+          "daily_ratios": {
+            "name": "Ratio per day"
+          }
+        }
+      },
+      "fog_factor": {
+        "name": "Fog factor",
+        "state_attributes": {
+          "mode": {
+            "name": "Mode",
+            "state": {
+              "off": "Off",
+              "shadow": "Shadow",
+              "on": "On"
+            }
+          },
+          "reason": {
+            "name": "Reason",
+            "state": {
+              "disabled": "Fog layer is off",
+              "no_forecast": "No production forecast today",
+              "waiting": "Waiting for enough of the morning",
+              "gate_closed": "Production is close enough to the forecast",
+              "base_uncertain": "Low production, but the forecast was uncertain",
+              "no_band": "Needs P10 in the forecast, which is missing",
+              "active": "Active: morning far below a confident forecast"
+            }
+          },
+          "gate": {
+            "name": "Gate"
+          },
+          "k_shadow": {
+            "name": "Shadow factor"
+          },
+          "k_morning": {
+            "name": "Ratio since morning"
+          },
+          "k_recent": {
+            "name": "Recent ratio"
+          },
+          "base_confidence": {
+            "name": "Forecast confidence (P10 ÷ P50)"
+          },
+          "active_since": {
+            "name": "Active since"
+          }
+        }
+      },
+      "error_base": {
+        "name": "Error base",
+        "state_attributes": {
+          "status": {
+            "name": "Status",
+            "state": {
+              "ok": "Evaluated",
+              "incomplete": "Day incomplete, not evaluated",
+              "no_report": "No finished day yet"
+            }
+          },
+          "date": {
+            "name": "Day"
+          },
+          "actual": {
+            "name": "Produced"
+          },
+          "rest_of_day_mae": {
+            "name": "Rest of day, mean absolute error"
+          },
+          "rest_of_day": {
+            "name": "Rest of day, error per time"
+          },
+          "day_error": {
+            "name": "Day total error (as of 07:00)"
+          },
+          "day_ahead_error": {
+            "name": "Day-ahead error (as of 21:00)"
+          },
+          "day_p10_held": {
+            "name": "Day at or above P10"
+          },
+          "day_p90_held": {
+            "name": "Day at or below P90"
+          }
+        }
+      },
+      "error_corrected": {
+        "name": "Error corrected",
+        "state_attributes": {
+          "status": {
+            "name": "Status",
+            "state": {
+              "ok": "Evaluated",
+              "incomplete": "Day incomplete, not evaluated",
+              "no_report": "No finished day yet"
+            }
+          },
+          "date": {
+            "name": "Day"
+          },
+          "actual": {
+            "name": "Produced"
+          },
+          "rest_of_day_mae": {
+            "name": "Rest of day, mean absolute error"
+          },
+          "rest_of_day": {
+            "name": "Rest of day, error per time"
+          },
+          "day_error": {
+            "name": "Day total error (as of 07:00)"
+          },
+          "day_ahead_error": {
+            "name": "Day-ahead error (as of 21:00)"
+          },
+          "day_p10_held": {
+            "name": "Day at or above P10"
+          },
+          "day_p90_held": {
+            "name": "Day at or below P90"
+          },
+          "level_factor": {
+            "name": "Level factor"
+          },
+          "fog_active": {
+            "name": "Fog layer was active"
+          },
+          "shadow_rest_of_day_mae": {
+            "name": "Shadow: rest of day, mean absolute error"
+          },
+          "shadow_rest_of_day": {
+            "name": "Shadow: rest of day, error per time"
+          },
+          "shadow_day_error": {
+            "name": "Shadow: day total error"
+          },
+          "shadow_day_ahead_error": {
+            "name": "Shadow: day-ahead error"
+          },
+          "shadow_day_p10_held": {
+            "name": "Shadow: day at or above P10"
+          },
+          "shadow_day_p90_held": {
+            "name": "Shadow: day at or below P90"
+          }
+        }
+      },
+      "base_age": {
+        "name": "Base age",
+        "state_attributes": {
+          "status": {
+            "name": "Status",
+            "state": {
+              "ok": "Base forecast readable",
+              "unavailable": "Base forecast unavailable, using the last one"
+            }
+          },
+          "failures_today": {
+            "name": "Failures today"
+          },
+          "forecast_entities": {
+            "name": "Forecast entities"
+          }
+        }
+      }
+    }
+  },
+  "services": {
+    "export": {
+      "name": "Export archive",
+      "description": "Writes the archive of an entry as CSV files into the config directory (pv_forecast_correction/export).",
+      "fields": {
+        "config_entry_id": {
+          "name": "Entry",
+          "description": "The PV Forecast Correction entry to export."
+        }
+      }
+    },
+    "reset": {
+      "name": "Reset learning",
+      "description": "Forgets the learned days; the level factor starts neutral again.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Entry",
+          "description": "The PV Forecast Correction entry to reset."
+        },
+        "clear_archive": {
+          "name": "Clear archive",
+          "description": "Also delete all archived data."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "entry_not_loaded": {
+      "message": "The selected entry is not loaded."
+    },
+    "archive_disabled": {
+      "message": "The archive is disabled or could not be opened."
+    }
+  },
+  "issues": {
+    "forecast_unavailable": {
+      "title": "Base forecast cannot be read",
+      "description": "The forecast of {entity_id} could not be read for more than an hour ({detail}). The correction keeps using the last forecast it had. Check the base forecast integration or change the input in the options."
+    },
+    "actual_unavailable": {
+      "title": "Production cannot be read",
+      "description": "The production sensor {entity_id} could not be read for more than an hour ({detail}). Intervals without readings are not learned from. Check the sensor or change the input in the options."
+    }
+  }
+}

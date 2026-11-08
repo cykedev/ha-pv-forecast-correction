@@ -1,0 +1,18 @@
+export:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: pv_forecast_correction
+reset:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: pv_forecast_correction
+    clear_archive:
+      default: false
+      selector:
+        boolean:

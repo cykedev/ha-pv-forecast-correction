@@ -1,0 +1,462 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "PV-Prognose korrigieren",
+        "description": "Wähle die zu korrigierende Prognose und den Sensor, der die tatsächliche Erzeugung misst. Die Prognose behält ihren Verlauf; nur ihr Niveau wird anhand der gemessenen Erzeugung angepasst. Weitere Einstellungen findest du nach der Einrichtung in den Optionen.",
+        "data": {
+          "name": "Name",
+          "forecast_today": "Prognose heute",
+          "forecast_tomorrow": "Prognose morgen",
+          "actual_energy": "Erzeugung (Energie)",
+          "actual_power": "Erzeugung (Leistung)",
+          "curtailment": "Abregelung"
+        },
+        "data_description": {
+          "name": "Name des Geräts; die Sensoren werden danach benannt.",
+          "forecast_today": "Sensor mit einer Prognoseliste im Solcast-Format (Attribut detailedForecast oder detailedHourly), z. B. „Prognose heute“ von Solcast.",
+          "forecast_tomorrow": "Dasselbe für morgen. Wird von Verbrauchern gebraucht, die die Nacht planen.",
+          "actual_energy": "Energiezähler der PV-Erzeugung in kWh (darf täglich zurückgesetzt werden). Bevorzugt. Entweder dieser oder Leistungssensoren.",
+          "actual_power": "Ein oder mehrere PV-Leistungssensoren; sie werden addiert und aufintegriert. Entweder diese oder ein Energiezähler.",
+          "curtailment": "Optional: an, solange die Leistung begrenzt ist (Einspeisegrenze, Abregelung). Diese Intervalle zählen in keinem Verhältnis mit."
+        }
+      }
+    },
+    "error": {
+      "entity_not_found": "Diese Entität gibt es nicht.",
+      "invalid_forecast": "Diese Entität hat keine Prognoseliste im Solcast-Format (detailedForecast oder detailedHourly mit period_start und pv_estimate).",
+      "same_forecast": "Heute und morgen müssen verschiedene Entitäten sein.",
+      "actual_missing": "Wähle für die Erzeugung einen Energiezähler oder mindestens einen Leistungssensor.",
+      "actual_both": "Wähle entweder einen Energiezähler oder Leistungssensoren, nicht beides."
+    },
+    "abort": {
+      "already_configured": "Diese Prognose wird bereits von einem anderen Eintrag korrigiert."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "PV Forecast Correction",
+        "description": "Änderungen gelten sofort; die gelernten Tage bleiben erhalten.",
+        "sections": {
+          "inputs": {
+            "name": "Eingänge",
+            "description": "Zu korrigierende Prognose und gemessene Erzeugung.",
+            "data": {
+              "forecast_today": "Prognose heute",
+              "forecast_tomorrow": "Prognose morgen",
+              "actual_energy": "Erzeugung (Energie)",
+              "actual_power": "Erzeugung (Leistung)",
+              "curtailment": "Abregelung"
+            },
+            "data_description": {
+              "forecast_today": "Sensor mit einer Prognoseliste im Solcast-Format.",
+              "forecast_tomorrow": "Dasselbe für morgen.",
+              "actual_energy": "Energiezähler in kWh (darf täglich zurückgesetzt werden). Entweder dieser oder Leistungssensoren.",
+              "actual_power": "PV-Leistungssensoren, werden addiert. Entweder diese oder ein Energiezähler.",
+              "curtailment": "An, solange die Leistung begrenzt ist; aus diesen Intervallen wird nicht gelernt."
+            }
+          },
+          "level": {
+            "name": "Niveau-Faktor",
+            "description": "Skaliert die ganze Prognose mit gemessener ÷ prognostizierter Energie der letzten Tage. Die eigene Dämpfung der Basisprognose bleibt unberührt; hier wird nur die verbleibende Abweichung entfernt.",
+            "data": {
+              "level_enabled": "Niveau-Faktor anwenden",
+              "level_days": "Gelernt aus Tagen",
+              "level_shrink_days": "Anlaufgewicht",
+              "level_min": "Kleinster Faktor",
+              "level_max": "Größter Faktor"
+            },
+            "data_description": {
+              "level_enabled": "Aus: Der Faktor wird weiter berechnet und angezeigt, aber nicht angewendet.",
+              "level_days": "Anzahl vollständiger vergangener Tage im Verhältnis.",
+              "level_shrink_days": "Tage mit Verhältnis 1.0, die hinzugerechnet werden – eine neue Installation startet neutral und wirkt nach etwa einer Woche voll.",
+              "level_min": "Der Faktor wird nie kleiner.",
+              "level_max": "Der Faktor wird nie größer."
+            }
+          },
+          "fog": {
+            "name": "Nebel-Schicht",
+            "description": "An Tagen, an denen ein ganzer Vormittag weit unter einer sicheren Prognose liegt (Nebel, Hochnebel), wird der Rest des Tages mit dem gemessenen Verhältnis abgesenkt. Im Schattenbetrieb wird das nur berechnet und angezeigt, die Prognose bleibt unverändert.",
+            "data": {
+              "fog_mode": "Betrieb",
+              "fog_threshold": "Schwelle",
+              "fog_min_confidence": "Mindest-Sicherheit der Prognose",
+              "fog_recent_hours": "Letztes Zeitfenster",
+              "fog_min_factor": "Kleinster Faktor"
+            },
+            "data_description": {
+              "fog_mode": "Aus, Schatten (nur berechnen und anzeigen) oder an (anwenden).",
+              "fog_threshold": "Die Schicht greift, wenn seit dem Morgen und im letzten Zeitfenster jeweils weniger als dieser Anteil der Prognose erzeugt wurde.",
+              "fog_min_confidence": "Verlangt zusätzlich, dass P10 ÷ P50 der Basisprognose für den Tag mindestens so hoch ist (eine enge, sichere Prognose). 0 schaltet diese Bedingung ab.",
+              "fog_recent_hours": "Länge des letzten Zeitfensters.",
+              "fog_min_factor": "Der Nebel-Faktor wird nie kleiner."
+            }
+          },
+          "archive": {
+            "name": "Archiv",
+            "description": "Speichert jede Basisprognose, die gemessene Energie und die angewendeten Faktoren in einer Datei im Konfigurationsverzeichnis, damit sich jede Variante später nachrechnen lässt (tools/replay.py).",
+            "data": {
+              "archive_enabled": "Archiv führen",
+              "archive_retention_days": "Aufbewahren für"
+            },
+            "data_description": {
+              "archive_enabled": "Etwa 10–20 MB pro Jahr.",
+              "archive_retention_days": "Ältere Daten werden jede Nacht gelöscht."
+            }
+          }
+        }
+      }
+    },
+    "error": {
+      "entity_not_found": "Diese Entität gibt es nicht.",
+      "invalid_forecast": "Diese Entität hat keine Prognoseliste im Solcast-Format.",
+      "same_forecast": "Heute und morgen müssen verschiedene Entitäten sein.",
+      "actual_missing": "Wähle für die Erzeugung einen Energiezähler oder mindestens einen Leistungssensor.",
+      "actual_both": "Wähle entweder einen Energiezähler oder Leistungssensoren, nicht beides.",
+      "level_bounds": "Der kleinste Niveau-Faktor muss unter dem größten liegen."
+    }
+  },
+  "selector": {
+    "fog_mode": {
+      "options": {
+        "off": "Aus",
+        "shadow": "Schatten (nur berechnen und anzeigen)",
+        "on": "An (anwenden)"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "today": {
+        "name": "Heute",
+        "state_attributes": {
+          "estimate": {
+            "name": "Prognose"
+          },
+          "estimate10": {
+            "name": "Prognose P10"
+          },
+          "estimate90": {
+            "name": "Prognose P90"
+          },
+          "base_estimate": {
+            "name": "Basisprognose"
+          },
+          "base_estimate10": {
+            "name": "Basisprognose P10"
+          },
+          "base_estimate90": {
+            "name": "Basisprognose P90"
+          },
+          "actual_so_far": {
+            "name": "Bisher erzeugt"
+          },
+          "level_factor": {
+            "name": "Niveau-Faktor"
+          },
+          "fog_factor": {
+            "name": "Nebel-Faktor"
+          }
+        }
+      },
+      "remaining_today": {
+        "name": "Rest heute",
+        "state_attributes": {
+          "estimate": {
+            "name": "Prognose"
+          },
+          "estimate10": {
+            "name": "Prognose P10"
+          },
+          "estimate90": {
+            "name": "Prognose P90"
+          },
+          "base_estimate": {
+            "name": "Basisprognose"
+          },
+          "base_estimate10": {
+            "name": "Basisprognose P10"
+          },
+          "base_estimate90": {
+            "name": "Basisprognose P90"
+          }
+        }
+      },
+      "tomorrow": {
+        "name": "Morgen",
+        "state_attributes": {
+          "estimate": {
+            "name": "Prognose"
+          },
+          "estimate10": {
+            "name": "Prognose P10"
+          },
+          "estimate90": {
+            "name": "Prognose P90"
+          },
+          "base_estimate": {
+            "name": "Basisprognose"
+          },
+          "base_estimate10": {
+            "name": "Basisprognose P10"
+          },
+          "base_estimate90": {
+            "name": "Basisprognose P90"
+          },
+          "level_factor": {
+            "name": "Niveau-Faktor"
+          }
+        }
+      },
+      "level_factor": {
+        "name": "Niveau-Faktor",
+        "state_attributes": {
+          "status": {
+            "name": "Status",
+            "state": {
+              "disabled": "Berechnet, nicht angewendet",
+              "no_history": "Noch kein vollständiger Tag (neutral)",
+              "learning": "Lernt (weniger Tage als eingestellt)",
+              "learned": "Gelernt",
+              "clamped": "Auf den eingestellten Bereich begrenzt"
+            }
+          },
+          "applied": {
+            "name": "Angewendet"
+          },
+          "days_used": {
+            "name": "Verwendete Tage"
+          },
+          "days_wanted": {
+            "name": "Eingestellte Tage"
+          },
+          "sum_actual": {
+            "name": "Gemessene Energie"
+          },
+          "sum_forecast": {
+            "name": "Prognostizierte Energie"
+          },
+          "raw_ratio": {
+            "name": "Gemessen ÷ Prognose"
+          },
+          "shrink_weight": {
+            "name": "Anlaufgewicht"
+          },
+          "clamped": {
+            "name": "Begrenzt"
+          },
+          "computed_at": {
+            "name": "Berechnet um"
+          },
+          "daily_ratios": {
+            "name": "Verhältnis je Tag"
+          }
+        }
+      },
+      "fog_factor": {
+        "name": "Nebel-Faktor",
+        "state_attributes": {
+          "mode": {
+            "name": "Betrieb",
+            "state": {
+              "off": "Aus",
+              "shadow": "Schatten",
+              "on": "An"
+            }
+          },
+          "reason": {
+            "name": "Grund",
+            "state": {
+              "disabled": "Nebel-Schicht ist aus",
+              "no_forecast": "Heute keine Erzeugung prognostiziert",
+              "waiting": "Wartet auf genug Vormittag",
+              "gate_closed": "Erzeugung liegt nah genug an der Prognose",
+              "base_uncertain": "Wenig Erzeugung, aber die Prognose war unsicher",
+              "no_band": "Braucht P10 in der Prognose, das fehlt",
+              "active": "Aktiv: Vormittag weit unter einer sicheren Prognose"
+            }
+          },
+          "gate": {
+            "name": "Bedingung"
+          },
+          "k_shadow": {
+            "name": "Schatten-Faktor"
+          },
+          "k_morning": {
+            "name": "Verhältnis seit dem Morgen"
+          },
+          "k_recent": {
+            "name": "Verhältnis zuletzt"
+          },
+          "base_confidence": {
+            "name": "Prognose-Sicherheit (P10 ÷ P50)"
+          },
+          "active_since": {
+            "name": "Aktiv seit"
+          }
+        }
+      },
+      "error_base": {
+        "name": "Fehler Basis",
+        "state_attributes": {
+          "status": {
+            "name": "Status",
+            "state": {
+              "ok": "Ausgewertet",
+              "incomplete": "Tag unvollständig, nicht ausgewertet",
+              "no_report": "Noch kein abgeschlossener Tag"
+            }
+          },
+          "date": {
+            "name": "Tag"
+          },
+          "actual": {
+            "name": "Erzeugt"
+          },
+          "rest_of_day_mae": {
+            "name": "Rest des Tages, mittlerer absoluter Fehler"
+          },
+          "rest_of_day": {
+            "name": "Rest des Tages, Fehler je Uhrzeit"
+          },
+          "day_error": {
+            "name": "Fehler Tagessumme (Stand 07:00)"
+          },
+          "day_ahead_error": {
+            "name": "Fehler Vortag (Stand 21:00)"
+          },
+          "day_p10_held": {
+            "name": "Tag mindestens P10"
+          },
+          "day_p90_held": {
+            "name": "Tag höchstens P90"
+          }
+        }
+      },
+      "error_corrected": {
+        "name": "Fehler korrigiert",
+        "state_attributes": {
+          "status": {
+            "name": "Status",
+            "state": {
+              "ok": "Ausgewertet",
+              "incomplete": "Tag unvollständig, nicht ausgewertet",
+              "no_report": "Noch kein abgeschlossener Tag"
+            }
+          },
+          "date": {
+            "name": "Tag"
+          },
+          "actual": {
+            "name": "Erzeugt"
+          },
+          "rest_of_day_mae": {
+            "name": "Rest des Tages, mittlerer absoluter Fehler"
+          },
+          "rest_of_day": {
+            "name": "Rest des Tages, Fehler je Uhrzeit"
+          },
+          "day_error": {
+            "name": "Fehler Tagessumme (Stand 07:00)"
+          },
+          "day_ahead_error": {
+            "name": "Fehler Vortag (Stand 21:00)"
+          },
+          "day_p10_held": {
+            "name": "Tag mindestens P10"
+          },
+          "day_p90_held": {
+            "name": "Tag höchstens P90"
+          },
+          "level_factor": {
+            "name": "Niveau-Faktor"
+          },
+          "fog_active": {
+            "name": "Nebel-Schicht war aktiv"
+          },
+          "shadow_rest_of_day_mae": {
+            "name": "Schatten: Rest des Tages, mittlerer absoluter Fehler"
+          },
+          "shadow_rest_of_day": {
+            "name": "Schatten: Rest des Tages, Fehler je Uhrzeit"
+          },
+          "shadow_day_error": {
+            "name": "Schatten: Fehler Tagessumme"
+          },
+          "shadow_day_ahead_error": {
+            "name": "Schatten: Fehler Vortag"
+          },
+          "shadow_day_p10_held": {
+            "name": "Schatten: Tag mindestens P10"
+          },
+          "shadow_day_p90_held": {
+            "name": "Schatten: Tag höchstens P90"
+          }
+        }
+      },
+      "base_age": {
+        "name": "Alter der Basis",
+        "state_attributes": {
+          "status": {
+            "name": "Status",
+            "state": {
+              "ok": "Basisprognose lesbar",
+              "unavailable": "Basisprognose nicht verfügbar, die letzte wird weiter benutzt"
+            }
+          },
+          "failures_today": {
+            "name": "Ausfälle heute"
+          },
+          "forecast_entities": {
+            "name": "Prognose-Entitäten"
+          }
+        }
+      }
+    }
+  },
+  "services": {
+    "export": {
+      "name": "Archiv exportieren",
+      "description": "Schreibt das Archiv eines Eintrags als CSV-Dateien ins Konfigurationsverzeichnis (pv_forecast_correction/export).",
+      "fields": {
+        "config_entry_id": {
+          "name": "Eintrag",
+          "description": "Der PV-Forecast-Correction-Eintrag, der exportiert wird."
+        }
+      }
+    },
+    "reset": {
+      "name": "Gelerntes zurücksetzen",
+      "description": "Vergisst die gelernten Tage; der Niveau-Faktor startet wieder neutral.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Eintrag",
+          "description": "Der PV-Forecast-Correction-Eintrag, der zurückgesetzt wird."
+        },
+        "clear_archive": {
+          "name": "Archiv leeren",
+          "description": "Löscht zusätzlich alle archivierten Daten."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "entry_not_loaded": {
+      "message": "Der gewählte Eintrag ist nicht geladen."
+    },
+    "archive_disabled": {
+      "message": "Das Archiv ist abgeschaltet oder konnte nicht geöffnet werden."
+    }
+  },
+  "issues": {
+    "forecast_unavailable": {
+      "title": "Basisprognose nicht lesbar",
+      "description": "Die Prognose von {entity_id} ist seit über einer Stunde nicht lesbar ({detail}). Die Korrektur benutzt weiter die letzte Prognose, die sie hatte. Prüfe die Integration der Basisprognose oder ändere den Eingang in den Optionen."
+    },
+    "actual_unavailable": {
+      "title": "Erzeugung nicht lesbar",
+      "description": "Der Erzeugungssensor {entity_id} ist seit über einer Stunde nicht lesbar ({detail}). Aus Intervallen ohne Messwerte wird nicht gelernt. Prüfe den Sensor oder ändere den Eingang in den Optionen."
+    }
+  }
+}
