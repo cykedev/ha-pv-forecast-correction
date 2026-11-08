@@ -14,7 +14,8 @@ It is not a forecast model. The base forecast supplies the weather, the shape of
 the uncertainty; this integration only adjusts the **level**, from measured facts. Every
 published number is *base forecast × factors*, and the factors are shown next to it. The
 base forecast keeps being scored next to the corrected one, so you can always see whether the
-correction helps.
+correction helps. An optional weather layer uses the German weather service's station
+forecast as a second opinion on dull and bright days.
 
 ## Contents
 
@@ -85,15 +86,48 @@ so this layer runs in **shadow mode** by default: it is computed and shown (sens
 factor*, and as the *shadow* columns of the error sensor) but not applied. Switch it on in
 the options once the archive shows that it helps at your site.
 
+### Weather layer (off by default)
+
+The fog layer can only react once a dull morning has been measured. The weather layer looks
+ahead instead: it takes the [DWD MOSMIX](https://www.dwd.de/EN/ourservices/met_application_mosmix/met_application_mosmix.html)
+station forecast of the Deutscher Wetterdienst — a statistically corrected point forecast
+for about 5,400 stations worldwide (densest in Germany), issued every six hours — as a second
+opinion, hour by hour:
+
+```
+q = (MOSMIX irradiance ÷ base forecast) ÷ their usual ratio for that hour
+w = clamp(q ^ trust, 0.3, 1.5)
+```
+
+When both see an hour as usual, w is 1. When MOSMIX expects fog or low cloud where the base
+expects sun, w drops for exactly those hours — the evening before for tomorrow and in the
+early morning for today, when battery and EV planners decide. Hours MOSMIX sees brighter than
+usual are raised: the level factor learns the average over dull and bright days, so both
+directions belong together. The usual ratio is learned from the forecasts of record of the
+last 14 days; before that, today's and tomorrow's forecasts stand in for it, so the layer
+works from the first day but says little until it has seen different kinds of days.
+
+In **shadow** mode the layer is fetched, computed and shown (sensor *Weather factor*: factor
+per hour, today's rest and tomorrow with the weather factor, sunshine and fog probability)
+and scored every night as the `weather_*` columns of the error sensor, without changing the
+forecast. Every run is archived, so `tools/replay.py` can evaluate it later. Switch it on once
+that shows it helps.
+
+The data is DWD open data (free, no account). The integration downloads the station's latest
+run once an hour (about 40 kB, only when it changed) and the station catalogue once per
+start; it sends nothing but the station ID. The nearest station is chosen from Home
+Assistant's home location, or set one in the options.
+
 ### What is published
 
 - **Today:** intervals that have passed carry the measured production (P10 = P50 = P90),
   the current interval blends what was measured with the corrected forecast, and future
   intervals carry the corrected forecast. An energy counter that steps every few minutes has
-  not yet reported the minutes since its last step; until it does, they use the forecast. The state is therefore the best estimate of the day
-  total: measured so far plus corrected rest.
+  not yet reported the minutes since its last step; until it does, they use the forecast.
+  The state is therefore the best estimate of the day total: measured so far plus corrected
+  rest.
 - **Remaining today:** the corrected rest of the day, with P10/P90.
-- **Tomorrow:** the base forecast × level factor.
+- **Tomorrow:** the base forecast × level factor (× weather factor, when that layer is on).
 - Wherever P50 is 0, P10 and P90 are 0 too (some consumers fall back to P90).
 
 ### Built-in comparison
@@ -148,6 +182,9 @@ integration). Several entries are possible, e.g. one per base forecast.
 | | Minimum forecast confidence | 0.5 | Base P10 ÷ P50 for the day must be at least this; 0 drops the condition. |
 | | Recent window | 2 h | Length of the recent window. |
 | | Lowest factor | 0.2 | Limit of the fog factor. |
+| Weather layer | Mode | off | `off`, `shadow` (fetch, compute, show and score) or `on` (apply). |
+| | MOSMIX station | nearest | DWD station ID; empty: the station nearest to the home location. |
+| | Trust | 0.5 | Exponent on the disagreement: 1 believes MOSMIX fully, 0.5 halfway. |
 | Archive | Keep an archive | on | See [Archive and replay](#archive-and-replay). |
 | | Keep for | 400 days | Older data is deleted every night. |
 
@@ -167,8 +204,9 @@ too: the integration follows the new ID.
 | `sensor.pv_forecast_correction_tomorrow` | corrected total tomorrow (kWh) | as *today*, without `actual_so_far` and `fog_factor` |
 | `sensor.pv_forecast_correction_level_factor` | f (day factor) | `status`, `days_used`, `curve` (factor per hour), `sum_actual`, `sum_forecast`, `raw_ratio`, `shrink_weight`, `daily_ratios`, `imported_days`, `computed_at` |
 | `sensor.pv_forecast_correction_fog_factor` | k applied (1 when inactive) | `mode`, `reason`, `gate`, `k_shadow`, `k_morning`, `k_recent`, `base_confidence`, `active_since` |
+| `sensor.pv_forecast_correction_weather_factor` | weather factor for the rest of today | `mode`, `status`, `station`, `station_distance_km`, `issued_at`, `tomorrow_factor`, `rest_today_kwh`, `tomorrow_kwh`, `factors_today`, `factors_tomorrow`, `sunshine_*`, `fog_probability_*`, `days_learned` |
 | `sensor.pv_forecast_correction_error_base` | yesterday's rest-of-day MAE of the base (kWh) | `rest_of_day` per time, `day_error`, `day_ahead_error`, `day_p10_held`, `day_p90_held`, `status` |
-| `sensor.pv_forecast_correction_error_corrected` | the same for the corrected forecast | as above, plus `shadow_*` while the fog layer is in shadow mode |
+| `sensor.pv_forecast_correction_error_corrected` | the same for the corrected forecast | as above, plus `shadow_*` / `weather_*` while the fog / weather layer is in shadow mode |
 | `sensor.pv_forecast_correction_base_age` | last refresh of the base forecast | `status`, `failures_today` |
 
 Errors are signed *forecast − actual*: positive means the forecast was too high. `status` and

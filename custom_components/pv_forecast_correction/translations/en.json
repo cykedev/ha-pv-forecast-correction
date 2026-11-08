@@ -97,6 +97,20 @@
               "fog_min_factor": "The fog factor never goes below this."
             }
           },
+          "weather": {
+            "name": "Weather layer (DWD MOSMIX)",
+            "description": "Compares, hour by hour, how bright the Deutscher Wetterdienst's station forecast MOSMIX expects the sky with how the base forecast sees it, relative to how the two usually relate, and lowers hours where MOSMIX expects fog or low cloud and the base does not (and raises hours it expects brighter than usual). It acts ahead of time: the evening before for tomorrow and in the early morning for today. Free DWD open data, fetched once an hour. Shadow mode computes it, shows it and scores it every night without changing the forecast.",
+            "data": {
+              "weather_mode": "Mode",
+              "weather_station": "MOSMIX station",
+              "weather_trust": "Trust"
+            },
+            "data_description": {
+              "weather_mode": "Off, shadow (computed, shown and scored only) or on (applied).",
+              "weather_station": "ID of a DWD MOSMIX station (e.g. 10865). Empty: the station nearest to the home location; the weather factor sensor shows which one and how far away it is.",
+              "weather_trust": "How much of a disagreement is believed: 1 fully, 0.5 halfway (e.g. MOSMIX sees a quarter of the usual light: factor 0.5 instead of 0.25)."
+            }
+          },
           "archive": {
             "name": "Archive",
             "description": "Keeps every base forecast, the measured energy and the applied factors in a file in the config directory, so any variant can be evaluated later (tools/replay.py).",
@@ -121,11 +135,20 @@
       "level_bounds": "The lowest level factor must be below the highest.",
       "duplicate_input": "Each entity can only be used for one input.",
       "own_sensor": "The sensors of this integration cannot be used as its inputs.",
-      "already_used": "Another entry already corrects this forecast."
+      "already_used": "Another entry already corrects this forecast.",
+      "invalid_station": "A MOSMIX station ID has 4 or 5 letters or digits.",
+      "unknown_station": "The DWD station catalogue has no station with this ID."
     }
   },
   "selector": {
     "fog_mode": {
+      "options": {
+        "off": "Off",
+        "shadow": "Shadow (compute and show only)",
+        "on": "On (apply)"
+      }
+    },
+    "weather_mode": {
       "options": {
         "off": "Off",
         "shadow": "Shadow (compute and show only)",
@@ -310,6 +333,77 @@
           }
         }
       },
+      "weather_factor": {
+        "name": "Weather factor",
+        "state_attributes": {
+          "mode": {
+            "name": "Mode",
+            "state": {
+              "off": "Off",
+              "shadow": "Shadow",
+              "on": "On"
+            }
+          },
+          "status": {
+            "name": "Status",
+            "state": {
+              "disabled": "Weather layer is off",
+              "unavailable": "No weather forecast",
+              "no_overlap": "Weather and base forecast do not overlap",
+              "learning": "Usual relation taken from today's and tomorrow's forecasts",
+              "learned": "Usual relation learned from past days"
+            }
+          },
+          "station": {
+            "name": "Station"
+          },
+          "station_name": {
+            "name": "Station name"
+          },
+          "station_distance_km": {
+            "name": "Distance from home (km)"
+          },
+          "trust": {
+            "name": "Trust"
+          },
+          "error": {
+            "name": "Last error"
+          },
+          "issued_at": {
+            "name": "MOSMIX run"
+          },
+          "tomorrow_factor": {
+            "name": "Factor tomorrow"
+          },
+          "rest_today_kwh": {
+            "name": "Rest of today with weather (kWh)"
+          },
+          "tomorrow_kwh": {
+            "name": "Tomorrow with weather (kWh)"
+          },
+          "factors_today": {
+            "name": "Factor per hour today"
+          },
+          "factors_tomorrow": {
+            "name": "Factor per hour tomorrow"
+          },
+          "sunshine_rest_today_h": {
+            "name": "Sunshine rest of today (h)"
+          },
+          "sunshine_tomorrow_h": {
+            "name": "Sunshine tomorrow (h)"
+          },
+          "fog_probability_rest_today": {
+            "name": "Fog probability rest of today (max %)"
+          },
+          "fog_probability_tomorrow": {
+            "name": "Fog probability tomorrow (max %)"
+          },
+          "days_learned": {
+            "name": "Days learned"
+          }
+        }
+      },
       "error_base": {
         "name": "Error base",
         "state_attributes": {
@@ -405,6 +499,24 @@
           },
           "shadow_day_p90_held": {
             "name": "Shadow: day at or below P90"
+          },
+          "weather_rest_of_day_mae": {
+            "name": "Weather: rest of day, mean absolute error"
+          },
+          "weather_rest_of_day": {
+            "name": "Weather: rest of day, error per time"
+          },
+          "weather_day_error": {
+            "name": "Weather: day total error"
+          },
+          "weather_day_ahead_error": {
+            "name": "Weather: day-ahead error"
+          },
+          "weather_day_p10_held": {
+            "name": "Weather: day above P10"
+          },
+          "weather_day_p90_held": {
+            "name": "Weather: day below P90"
           }
         }
       },

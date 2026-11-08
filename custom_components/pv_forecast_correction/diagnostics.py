@@ -34,6 +34,19 @@ async def async_get_config_entry_diagnostics(
             "content": archive_stats,
         },
         "last_error": coordinator.last_error,
+        "weather": {
+            "station": None
+            if coordinator.weather_station is None
+            else {
+                "id": coordinator.weather_station.id,
+                "name": coordinator.weather_station.name,
+                "distance_km": coordinator.weather_station.distance_km,
+            },
+            "error": coordinator.weather_error,
+            "issued_at": None if engine.weather is None else engine.weather.issued_at.isoformat(),
+            "typical": engine.weather_typical.to_dict(),
+            "factors": len(engine.weather_record),
+        },
         "engine": {
             "day": None if engine.day is None else engine.day.isoformat(),
             "last_update": None if engine.last_update is None else engine.last_update.isoformat(),

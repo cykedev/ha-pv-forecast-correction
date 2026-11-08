@@ -97,6 +97,20 @@
               "fog_min_factor": "Der Nebel-Faktor wird nie kleiner."
             }
           },
+          "weather": {
+            "name": "Wetter-Schicht (DWD MOSMIX)",
+            "description": "Vergleicht Stunde für Stunde, wie hell die Stationsprognose MOSMIX des Deutschen Wetterdiensts den Himmel erwartet, mit der Basis-Prognose – gemessen daran, wie beide üblicherweise zueinander stehen – und senkt Stunden, in denen MOSMIX Nebel oder tiefe Wolken erwartet, die Basis aber nicht (und hebt Stunden an, die MOSMIX heller als üblich sieht). Wirkt vorab: am Vorabend für morgen und früh morgens für heute. Freie DWD-Daten, einmal pro Stunde abgerufen. Im Schattenbetrieb wird sie berechnet, angezeigt und jede Nacht bewertet, ohne die Prognose zu ändern.",
+            "data": {
+              "weather_mode": "Modus",
+              "weather_station": "MOSMIX-Station",
+              "weather_trust": "Vertrauen"
+            },
+            "data_description": {
+              "weather_mode": "Aus, Schatten (nur berechnen, anzeigen und bewerten) oder an (anwenden).",
+              "weather_station": "Kennung einer DWD-MOSMIX-Station (z. B. 10865). Leer: die nächste Station zum Standort; der Sensor Wetter-Faktor zeigt, welche es ist und wie weit sie entfernt ist.",
+              "weather_trust": "Wie viel einer Abweichung geglaubt wird: 1 ganz, 0,5 zur Hälfte (sieht MOSMIX ein Viertel des üblichen Lichts: Faktor 0,5 statt 0,25)."
+            }
+          },
           "archive": {
             "name": "Archiv",
             "description": "Speichert jede Basisprognose, die gemessene Energie und die angewendeten Faktoren in einer Datei im Konfigurationsverzeichnis, damit sich jede Variante später nachrechnen lässt (tools/replay.py).",
@@ -121,11 +135,20 @@
       "level_bounds": "Der kleinste Niveau-Faktor muss unter dem größten liegen.",
       "duplicate_input": "Jede Entität kann nur für einen Eingang verwendet werden.",
       "own_sensor": "Die Sensoren dieser Integration können nicht ihre eigenen Eingänge sein.",
-      "already_used": "Ein anderer Eintrag korrigiert diese Prognose bereits."
+      "already_used": "Ein anderer Eintrag korrigiert diese Prognose bereits.",
+      "invalid_station": "Eine MOSMIX-Kennung hat 4 oder 5 Buchstaben oder Ziffern.",
+      "unknown_station": "Im Stationskatalog des DWD gibt es keine Station mit dieser Kennung."
     }
   },
   "selector": {
     "fog_mode": {
+      "options": {
+        "off": "Aus",
+        "shadow": "Schatten (nur berechnen und anzeigen)",
+        "on": "An (anwenden)"
+      }
+    },
+    "weather_mode": {
       "options": {
         "off": "Aus",
         "shadow": "Schatten (nur berechnen und anzeigen)",
@@ -310,6 +333,77 @@
           }
         }
       },
+      "weather_factor": {
+        "name": "Wetter-Faktor",
+        "state_attributes": {
+          "mode": {
+            "name": "Modus",
+            "state": {
+              "off": "Aus",
+              "shadow": "Schatten",
+              "on": "An"
+            }
+          },
+          "status": {
+            "name": "Status",
+            "state": {
+              "disabled": "Wetter-Schicht ist aus",
+              "unavailable": "Keine Wetterprognose",
+              "no_overlap": "Wetter- und Basis-Prognose überschneiden sich nicht",
+              "learning": "Übliches Verhältnis aus der Prognose für heute und morgen",
+              "learned": "Übliches Verhältnis aus vergangenen Tagen gelernt"
+            }
+          },
+          "station": {
+            "name": "Station"
+          },
+          "station_name": {
+            "name": "Stationsname"
+          },
+          "station_distance_km": {
+            "name": "Entfernung vom Standort (km)"
+          },
+          "trust": {
+            "name": "Vertrauen"
+          },
+          "error": {
+            "name": "Letzter Fehler"
+          },
+          "issued_at": {
+            "name": "MOSMIX-Lauf"
+          },
+          "tomorrow_factor": {
+            "name": "Faktor morgen"
+          },
+          "rest_today_kwh": {
+            "name": "Rest heute mit Wetter (kWh)"
+          },
+          "tomorrow_kwh": {
+            "name": "Morgen mit Wetter (kWh)"
+          },
+          "factors_today": {
+            "name": "Faktor je Stunde heute"
+          },
+          "factors_tomorrow": {
+            "name": "Faktor je Stunde morgen"
+          },
+          "sunshine_rest_today_h": {
+            "name": "Sonne Rest heute (h)"
+          },
+          "sunshine_tomorrow_h": {
+            "name": "Sonne morgen (h)"
+          },
+          "fog_probability_rest_today": {
+            "name": "Nebelwahrscheinlichkeit Rest heute (max. %)"
+          },
+          "fog_probability_tomorrow": {
+            "name": "Nebelwahrscheinlichkeit morgen (max. %)"
+          },
+          "days_learned": {
+            "name": "Gelernte Tage"
+          }
+        }
+      },
       "error_base": {
         "name": "Fehler Basis",
         "state_attributes": {
@@ -405,6 +499,24 @@
           },
           "shadow_day_p90_held": {
             "name": "Schatten: Tag höchstens P90"
+          },
+          "weather_rest_of_day_mae": {
+            "name": "Wetter: Rest des Tages, mittlerer absoluter Fehler"
+          },
+          "weather_rest_of_day": {
+            "name": "Wetter: Rest des Tages, Fehler je Uhrzeit"
+          },
+          "weather_day_error": {
+            "name": "Wetter: Fehler Tagessumme"
+          },
+          "weather_day_ahead_error": {
+            "name": "Wetter: Fehler Vortagesprognose"
+          },
+          "weather_day_p10_held": {
+            "name": "Wetter: Tag über P10"
+          },
+          "weather_day_p90_held": {
+            "name": "Wetter: Tag unter P90"
           }
         }
       },

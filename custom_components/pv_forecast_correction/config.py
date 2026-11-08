@@ -25,12 +25,17 @@ from .const import (
     CONF_LEVEL_MAX,
     CONF_LEVEL_MIN,
     CONF_LEVEL_SHRINK_DAYS,
+    CONF_WEATHER_MODE,
+    CONF_WEATHER_STATION,
+    CONF_WEATHER_TRUST,
     DEFAULT_ARCHIVE_RETENTION_DAYS,
 )
 from .core import FogGate, FogMode, FogSettings, LevelSettings, Settings
+from .core.weather import STATION_PATTERN, WeatherMode, WeatherSettings
 
 _LEVEL = LevelSettings()
 _FOG = FogSettings()
+_WEATHER = WeatherSettings()
 
 DEFAULTS: dict[str, Any] = {
     CONF_LEVEL_ENABLED: True,
@@ -44,6 +49,9 @@ DEFAULTS: dict[str, Any] = {
     CONF_FOG_CONFIDENCE: _FOG.gate.min_confidence,
     CONF_FOG_RECENT_HOURS: _FOG.recent_hours,
     CONF_FOG_MIN_FACTOR: _FOG.min_factor,
+    CONF_WEATHER_MODE: _WEATHER.mode.value,
+    CONF_WEATHER_STATION: "",
+    CONF_WEATHER_TRUST: _WEATHER.trust,
     CONF_ARCHIVE_ENABLED: True,
     CONF_ARCHIVE_RETENTION_DAYS: DEFAULT_ARCHIVE_RETENTION_DAYS,
 }
@@ -117,11 +125,28 @@ def settings_from(config: Mapping[str, Any]) -> Settings:
         )
     except (KeyError, TypeError, ValueError):
         fog = FogSettings()
-    return Settings(level_enabled=bool(config[CONF_LEVEL_ENABLED]), level=level, fog=fog)
+    try:
+        weather = WeatherSettings(
+            mode=WeatherMode(config[CONF_WEATHER_MODE]),
+            station=weather_station(config),
+            trust=float(config[CONF_WEATHER_TRUST]),
+        )
+    except (KeyError, TypeError, ValueError):
+        weather = WeatherSettings()
+    return Settings(
+        level_enabled=bool(config[CONF_LEVEL_ENABLED]), level=level, fog=fog, weather=weather
+    )
+
+
+def weather_station(config: Mapping[str, Any]) -> str | None:
+    """The configured MOSMIX station, or None for the one nearest to home."""
+    station = str(config.get(CONF_WEATHER_STATION) or "").strip().upper()
+    return station if STATION_PATTERN.match(station) else None
 
 
 def settings_dict(settings: Settings) -> dict[str, Any]:
     """Settings as plain JSON-compatible values (archive metadata, diagnostics)."""
     data = asdict(settings)
     data["fog"]["mode"] = settings.fog.mode.value
+    data["weather"]["mode"] = settings.weather.mode.value
     return data

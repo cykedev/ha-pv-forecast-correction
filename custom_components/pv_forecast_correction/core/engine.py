@@ -31,6 +31,7 @@ from .score import (
     DAY_CHECKPOINT,
     REST_CHECKPOINTS,
     SHADOW,
+    WEATHER,
     Band,
     DayCheckpoints,
     DayReport,
@@ -42,10 +43,23 @@ from .timeline import (
     INTERVAL_HOURS,
     as_utc,
     day_bounds,
+    floor_to,
     local_day,
     local_time,
     overlap_seconds,
     steps,
+)
+from .weather import (
+    HOUR,
+    WeatherForecast,
+    WeatherMode,
+    WeatherPoint,
+    WeatherSettings,
+    WeatherTypical,
+    hour_factor,
+    hourly_pairs,
+    local_hour,
+    typical_ratio,
 )
 
 STORAGE_VERSION = 1
@@ -64,6 +78,7 @@ class Settings:
     level_enabled: bool = True
     level: LevelSettings = field(default_factory=LevelSettings)
     fog: FogSettings = field(default_factory=FogSettings)
+    weather: WeatherSettings = field(default_factory=WeatherSettings)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +118,30 @@ class FogStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class WeatherStatus:
+    """Weather layer as published."""
+
+    mode: WeatherMode
+    station: str | None
+    issued_at: datetime | None
+    valid: bool
+    typical: WeatherTypical
+    learned: bool
+    """The typical ratio comes from past days (else from the current forecasts)."""
+    rest_factor: float | None = None
+    tomorrow_factor: float | None = None
+    rest_estimate: float | None = None
+    """Corrected rest of today with the weather factor (kWh), applied or not."""
+    tomorrow_estimate: float | None = None
+    hours_today: dict[str, float] = field(default_factory=dict)
+    hours_tomorrow: dict[str, float] = field(default_factory=dict)
+    sunshine_today: float | None = None
+    sunshine_tomorrow: float | None = None
+    fog_today: float | None = None
+    fog_tomorrow: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Result:
     """Everything the sensors publish."""
 
@@ -119,6 +158,7 @@ class Result:
     base_refreshed_at: datetime | None
     base_failures_today: int
     history: tuple[DayStats, ...] = field(default=())
+    weather: WeatherStatus | None = None
 
 
 class Corrector:
@@ -146,6 +186,15 @@ class Corrector:
         self.last_update: datetime | None = None
         self.meter_source: str | None = None
         """Identifies the measurement input the meter readings belong to."""
+        self.weather: WeatherForecast | None = None
+        self.weather_valid = False
+        self.weather_record: dict[datetime, WeatherPoint] = {}
+        """MOSMIX values as they stood when each hour began."""
+        self.weather_factor_record: dict[datetime, float] = {}
+        """Weather factor in effect when each hour began."""
+        self.weather_typical = WeatherTypical()
+        self._weather_factors: dict[datetime, float] = {}
+        self._weather_typical_used = WeatherTypical()
 
     # ------------------------------------------------------------------ inputs
 
@@ -178,6 +227,21 @@ class Corrector:
         if self.base_valid:
             self.base_failures_today += 1
         self.base_valid = False
+
+    def set_weather(self, forecast: WeatherForecast, now: datetime) -> bool:
+        """Replace the weather forecast; True when it is a new run."""
+        new = self.weather is None or (
+            forecast.issued_at,
+            forecast.station,
+        ) != (self.weather.issued_at, self.weather.station)
+        self.weather = forecast
+        self.weather_valid = True
+        self._refresh_weather_factors()
+        return new
+
+    def weather_unavailable(self) -> None:
+        """The weather forecast could not be fetched; the last one is kept."""
+        self.weather_valid = False
 
     def observe_energy(
         self, when: datetime, kwh: float | None, seen: datetime | None = None
@@ -253,6 +317,48 @@ class Corrector:
     def fog_shadow(self) -> float | None:
         return self.fog.k if self.settings.fog.mode is FogMode.SHADOW else None
 
+    def weather_at(self, start: datetime) -> float:
+        """Weather factor for the interval starting at ``start`` (applied or not)."""
+        return self._weather_factors.get(floor_to(as_utc(start), HOUR), 1.0)
+
+    def weather_applied(self, start: datetime) -> float:
+        if self.settings.weather.mode is not WeatherMode.ON:
+            return 1.0
+        return self.weather_at(start)
+
+    def _base_hourly(self, points: Iterable[ForecastPoint]) -> dict[datetime, float]:
+        hourly: dict[datetime, float] = {}
+        for point in points:
+            hour = floor_to(point.start, HOUR)
+            hourly[hour] = hourly.get(hour, 0.0) + point.p50 * INTERVAL_HOURS
+        return hourly
+
+    def _refresh_weather_factors(self) -> None:
+        """Weather factor per hour of today and tomorrow from the current forecasts."""
+        settings = self.settings.weather
+        self._weather_factors = {}
+        if settings.mode is WeatherMode.OFF or self.weather is None or not self.base:
+            return
+        weather = self.weather.as_dict()
+        typical = self.weather_typical
+        if typical.days_used == 0:
+            # Nothing learned yet: how the two forecasts relate today and tomorrow.
+            pairs = hourly_pairs(self._base_hourly(self.base.points), weather, self.tz)
+            typical = typical_ratio([(date.min, pairs)], settings) if pairs else typical
+        self._weather_typical_used = typical
+        by_day: dict[date, dict[datetime, float]] = {}
+        for hour, kwh in self._base_hourly(self.base.points).items():
+            by_day.setdefault(local_day(hour + HOUR / 2, self.tz), {})[hour] = kwh
+        for hours in by_day.values():
+            peak = max(hours.values(), default=0.0)
+            for hour, kwh in hours.items():
+                point = weather.get(hour)
+                if point is None or kwh < settings.min_share * peak:
+                    continue
+                self._weather_factors[hour] = hour_factor(
+                    point.irradiance, kwh, typical.at(local_hour(hour, self.tz)), settings
+                )
+
     def update(self, now: datetime) -> None:
         """Advance the state to ``now``."""
         now = as_utc(now)
@@ -264,6 +370,7 @@ class Corrector:
             return  # clock went backwards; keep the state of the later day
         elif today > self.day:
             self._roll_over(today, now)
+        self._refresh_weather_factors()
         self._record(now)
         self._update_fog(now)
         self._capture_checkpoints(now)
@@ -319,6 +426,16 @@ class Corrector:
         self.level = compute_level_factor(
             self.history.values(), self.day, self.settings.level, computed_at=now
         )
+        oldest = self.day - timedelta(days=2 * self.settings.weather.days)
+        self.weather_typical = typical_ratio(
+            (
+                (stats.day, stats.weather)
+                for stats in sorted(self.history.values(), key=lambda s: s.day)
+                if oldest <= stats.day < self.day and stats.weather
+            ),
+            self.settings.weather,
+        )
+        self._refresh_weather_factors()
 
     def _roll_over(self, today: date, now: datetime) -> None:
         previous = self.day
@@ -326,13 +443,26 @@ class Corrector:
         prev_start, prev_end = day_bounds(previous, self.tz)
         for point in self.base.between(prev_start, prev_end):
             self.record.setdefault(point.start, point)
+        if self.weather is not None:
+            for point in self.weather.between(prev_start, prev_end):
+                self.weather_record.setdefault(point.start, point)
         stats = self._day_stats(previous)
+        record_hourly = self._base_hourly(
+            p for s, p in self.record.items() if prev_start <= s < prev_end
+        )
+        stats = replace_stats(
+            stats, weather=hourly_pairs(record_hourly, self.weather_record, self.tz)
+        )
         self.history[previous] = stats
         self.report = self._build_report(previous, stats)
 
         self.day = today
         start, _ = day_bounds(today, self.tz)
         self.record = {s: p for s, p in self.record.items() if s >= start}
+        self.weather_record = {s: p for s, p in self.weather_record.items() if s >= start}
+        self.weather_factor_record = {
+            s: f for s, f in self.weather_factor_record.items() if s >= start
+        }
         cutoff = today - timedelta(days=HISTORY_DAYS)
         self.history = {d: s for d, s in self.history.items() if d >= cutoff}
         self._compute_level(now)
@@ -355,6 +485,13 @@ class Corrector:
                 break
             if point.start >= start:
                 self.record.setdefault(point.start, point)
+        if self.weather is not None:
+            for weather_point in self.weather.points:
+                if start <= weather_point.start <= now and weather_point.start < end:
+                    self.weather_record.setdefault(weather_point.start, weather_point)
+            for hour in steps(floor_to(start, HOUR), min(now, end), HOUR):
+                if hour >= start - HOUR / 2:
+                    self.weather_factor_record.setdefault(hour, self.weather_applied(hour))
 
     def _day_stats(self, day: date) -> DayStats:
         start, end = day_bounds(day, self.tz)
@@ -397,13 +534,24 @@ class Corrector:
             measured = self.bins.interval(interval)
             if not measured.measured or measured.curtailed:
                 continue
-            expected = self.level_at(interval) * point.p50 * INTERVAL_HOURS
+            expected = (
+                self.level_at(interval)
+                * self.weather_factor_record.get(floor_to(interval, HOUR), 1.0)
+                * point.p50
+                * INTERVAL_HOURS
+            )
             expected_morning += expected
             actual_morning += measured.energy_kwh
             if interval >= recent_start:
                 expected_recent += expected
                 actual_recent += measured.energy_kwh
-        expected_day = energy(p.scaled(self.level_at(p.start)) for p in self._today_points()) or 0.0
+        expected_day = (
+            energy(
+                p.scaled(self.level_at(p.start) * self.weather_applied(p.start))
+                for p in self._today_points()
+            )
+            or 0.0
+        )
         today_base = self.base.between(start, end)
         confidence = None
         base_p50 = energy(today_base) or 0.0
@@ -454,7 +602,7 @@ class Corrector:
     ) -> dict[str, Band]:
         """Base, corrected and (in shadow mode) shadow version of the base between ``start``
         and ``end``; ``measured`` is added to the corrected variants."""
-        corrected = self._base_band(points, start, end, self.level_at)
+        corrected = self._base_band(points, start, end, self._corrected_scale)
         bands = {
             BASE: self._base_band(points, start, end),
             CORRECTED: corrected.scaled(self.fog_applied, measured),
@@ -462,7 +610,20 @@ class Corrector:
         shadow = self.fog_shadow
         if shadow is not None:
             bands[SHADOW] = corrected.scaled(shadow, measured)
+        if self._weather_in_shadow:
+            with_weather = self._base_band(points, start, end, self._weather_scale)
+            bands[WEATHER] = with_weather.scaled(self.fog_applied, measured)
         return bands
+
+    def _corrected_scale(self, start: datetime) -> float:
+        return self.level_at(start) * self.weather_applied(start)
+
+    def _weather_scale(self, start: datetime) -> float:
+        return self.level_at(start) * self.weather_at(start)
+
+    @property
+    def _weather_in_shadow(self) -> bool:
+        return self.settings.weather.mode is WeatherMode.SHADOW and bool(self._weather_factors)
 
     def _capture_checkpoints(self, now: datetime) -> None:
         assert self.day is not None
@@ -497,13 +658,13 @@ class Corrector:
             t_start, t_end = day_bounds(tomorrow, self.tz)
             points = self.base.between(t_start, t_end)
             if points:
-                self.next_day_ahead = (
-                    tomorrow,
-                    {
-                        BASE: self._base_band(points, t_start, t_end),
-                        CORRECTED: self._base_band(points, t_start, t_end, self.level_at),
-                    },
-                )
+                bands = {
+                    BASE: self._base_band(points, t_start, t_end),
+                    CORRECTED: self._base_band(points, t_start, t_end, self._corrected_scale),
+                }
+                if self._weather_in_shadow:
+                    bands[WEATHER] = self._base_band(points, t_start, t_end, self._weather_scale)
+                self.next_day_ahead = (tomorrow, bands)
 
     def _build_report(self, day: date, stats: DayStats) -> DayReport:
         start, end = day_bounds(day, self.tz)
@@ -583,7 +744,7 @@ class Corrector:
         rest_energy = Band(0.0, 0.0 if bands else None, 0.0 if bands else None)
         for point in today_base:
             interval_end = point.start + INTERVAL
-            corrected = point.scaled(self.level_at(point.start) * self.fog_applied)
+            corrected = point.scaled(self._corrected_scale(point.start) * self.fog_applied)
             if interval_end <= now:
                 # Past: measured where readings cover the interval, the level-corrected
                 # forecast of record for the uncovered rest.
@@ -625,7 +786,7 @@ class Corrector:
         if tomorrow_base:
             tomorrow = self._day_forecast(
                 tomorrow_day,
-                [p.scaled(self.level_at(p.start)) for p in tomorrow_base],
+                [p.scaled(self._corrected_scale(p.start)) for p in tomorrow_base],
                 tomorrow_base,
             )
 
@@ -649,6 +810,71 @@ class Corrector:
             base_refreshed_at=self.base_refreshed_at,
             base_failures_today=self.base_failures_today,
             history=tuple(self.history[d] for d in sorted(self.history)),
+            weather=self._weather_status(now, today_base, tomorrow_base),
+        )
+
+    def _weather_status(
+        self,
+        now: datetime,
+        today_base: list[ForecastPoint],
+        tomorrow_base: list[ForecastPoint],
+    ) -> WeatherStatus:
+        settings = self.settings.weather
+        status = WeatherStatus(
+            mode=settings.mode,
+            station=settings.station,
+            issued_at=None if self.weather is None else self.weather.issued_at,
+            valid=self.weather_valid,
+            typical=self._weather_typical_used,
+            learned=self.weather_typical.days_used > 0,
+        )
+        if settings.mode is WeatherMode.OFF or not self._weather_factors:
+            return status
+        weather = {} if self.weather is None else self.weather.as_dict()
+
+        def summary(points: list[ForecastPoint], start: datetime) -> tuple[Any, ...]:
+            plain = with_weather = 0.0
+            hours: dict[str, float] = {}
+            for point in points:
+                end = point.start + INTERVAL
+                hours_left = max(0.0, (end - max(start, point.start)).total_seconds()) / 3600
+                scale = self.level_at(point.start) * self.fog_applied
+                plain += point.p50 * scale * hours_left
+                with_weather += point.p50 * scale * self.weather_at(point.start) * hours_left
+                hour = floor_to(point.start, HOUR)
+                if hour in self._weather_factors:
+                    label = f"{local_hour(hour, self.tz):02d}:00"
+                    hours[label] = round(self._weather_factors[hour], 3)
+            factor = with_weather / plain if plain > 0 else None
+            hour_starts = {floor_to(p.start, HOUR) for p in points}
+            sunshine = [weather[h].sunshine for h in hour_starts if h in weather]
+            fog = [weather[h].fog for h in hour_starts if h in weather]
+            return (
+                factor,
+                with_weather,
+                hours,
+                sum(v for v in sunshine if v is not None) if sunshine else None,
+                max((v for v in fog if v is not None), default=None),
+            )
+
+        rest = [p for p in today_base if p.start + INTERVAL > now]
+        start = max(now, rest[0].start) if rest else now
+        r_factor, r_estimate, _, r_sun, r_fog = summary(rest, start)
+        t_start = tomorrow_base[0].start if tomorrow_base else now
+        t_factor, t_estimate, t_hours, t_sun, t_fog = summary(tomorrow_base, t_start)
+        today_hours = summary(today_base, today_base[0].start)[2] if today_base else {}
+        return replace_stats(
+            status,
+            rest_factor=r_factor,
+            tomorrow_factor=t_factor,
+            rest_estimate=r_estimate if rest else 0.0,
+            tomorrow_estimate=t_estimate if tomorrow_base else None,
+            hours_today=today_hours,
+            hours_tomorrow=t_hours,
+            sunshine_today=r_sun,
+            sunshine_tomorrow=t_sun,
+            fog_today=r_fog,
+            fog_tomorrow=t_fog,
         )
 
     # ------------------------------------------------------------------ persistence
@@ -686,6 +912,13 @@ class Corrector:
             "curtailment": self._curtailment.to_dict(),
             "meter_source": self.meter_source,
             "last_update": None if self.last_update is None else self.last_update.isoformat(),
+            "weather": None if self.weather is None else self.weather.to_dict(),
+            "weather_valid": self.weather_valid,
+            "weather_record": [p.to_list() for _, p in sorted(self.weather_record.items())],
+            "weather_factor_record": [
+                [int(s.timestamp()), f] for s, f in sorted(self.weather_factor_record.items())
+            ],
+            "weather_typical": self.weather_typical.to_dict(),
         }
 
     @classmethod
@@ -737,4 +970,17 @@ class Corrector:
             engine._energy_meter.max_power_kw = max(PLAUSIBLE_MIN_KW, PLAUSIBLE_PEAK_FACTOR * peak)
         if data.get("last_update"):
             engine.last_update = datetime.fromisoformat(data["last_update"])
+        if data.get("weather"):
+            engine.weather = WeatherForecast.from_dict(data["weather"])
+            engine.weather_valid = bool(data.get("weather_valid", True))
+        engine.weather_record = {
+            p.start: p for p in (WeatherPoint.from_list(r) for r in data.get("weather_record", []))
+        }
+        engine.weather_factor_record = {
+            datetime.fromtimestamp(int(s), UTC): float(f)
+            for s, f in data.get("weather_factor_record", [])
+        }
+        if data.get("weather_typical"):
+            engine.weather_typical = WeatherTypical.from_dict(data["weather_typical"])
+        engine._refresh_weather_factors()
         return engine

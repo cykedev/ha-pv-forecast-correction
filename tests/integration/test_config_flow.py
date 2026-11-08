@@ -31,6 +31,9 @@ from custom_components.pv_forecast_correction.const import (
     CONF_LEVEL_MAX,
     CONF_LEVEL_MIN,
     CONF_LEVEL_SHRINK_DAYS,
+    CONF_WEATHER_MODE,
+    CONF_WEATHER_STATION,
+    CONF_WEATHER_TRUST,
     DOMAIN,
 )
 
@@ -157,6 +160,7 @@ def options_input(**changes: Any) -> dict[str, Any]:
             CONF_FOG_RECENT_HOURS: 1.5,
             CONF_FOG_MIN_FACTOR: 0.3,
         },
+        "weather": {CONF_WEATHER_MODE: "off", CONF_WEATHER_TRUST: 0.7},
         "archive": {CONF_ARCHIVE_ENABLED: False, CONF_ARCHIVE_RETENTION_DAYS: 100},
     }
     for key, value in changes.items():
@@ -193,6 +197,20 @@ async def test_options_change_inputs_and_settings(
     assert coordinator.settings.level.by_time is False
     assert coordinator.settings.fog.mode.value == "on"
     assert coordinator.settings.fog.gate.min_confidence is None
+    assert coordinator.settings.weather.trust == 0.7
     assert coordinator.archive is None
     fog = hass.states.get("sensor.pv_forecast_correction_fog_factor")
     assert fog.attributes["gate"] == "consistency 0.6"
+
+
+@pytest.mark.usefixtures("entities")
+async def test_options_reject_a_malformed_weather_station(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    config_entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], options_input(weather__weather_station="not a station")
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_WEATHER_STATION: "invalid_station"}

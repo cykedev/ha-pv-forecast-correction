@@ -94,7 +94,7 @@ async def test_days_are_learned_scored_and_archived(
         blocking=True,
         return_response=True,
     )
-    assert len(response["files"]) == 4
+    assert len(response["files"]) == 5
 
     diagnostics = await async_get_config_entry_diagnostics(hass, config_entry)
     assert diagnostics["engine"]["level"]["days_used"] == 2

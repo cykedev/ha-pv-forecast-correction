@@ -45,14 +45,20 @@ from .const import (
     CONF_LEVEL_MAX,
     CONF_LEVEL_MIN,
     CONF_LEVEL_SHRINK_DAYS,
+    CONF_WEATHER_MODE,
+    CONF_WEATHER_STATION,
+    CONF_WEATHER_TRUST,
     DEFAULT_NAME,
     DOMAIN,
     SECTION_ARCHIVE,
     SECTION_FOG,
     SECTION_INPUTS,
     SECTION_LEVEL,
+    SECTION_WEATHER,
 )
 from .core import FogMode, ForecastFormatError, parse_forecast
+from .core.weather import STATION_PATTERN, WeatherError, WeatherMode
+from .weather_source import async_stations
 
 
 def _number(minimum: float, maximum: float, step: float, unit: str | None = None):
@@ -195,11 +201,19 @@ class PvForecastCorrectionOptionsFlow(OptionsFlow):
         errors: dict[str, str] = {}
         if user_input is not None:
             flat: dict[str, Any] = {}
-            for name in (SECTION_INPUTS, SECTION_LEVEL, SECTION_FOG, SECTION_ARCHIVE):
+            for name in (
+                SECTION_INPUTS,
+                SECTION_LEVEL,
+                SECTION_FOG,
+                SECTION_WEATHER,
+                SECTION_ARCHIVE,
+            ):
                 flat.update(user_input.get(name, {}))
             errors = validate_inputs(self.hass, flat, self.config_entry.entry_id)
             if float(flat[CONF_LEVEL_MIN]) >= float(flat[CONF_LEVEL_MAX]):
                 errors["base"] = "level_bounds"
+            if error := await self._validate_station(flat):
+                errors[CONF_WEATHER_STATION] = error
             if not errors:
                 flat.update(_clean_inputs(flat))
                 return self.async_create_entry(data=flat)
@@ -231,6 +245,19 @@ class PvForecastCorrectionOptionsFlow(OptionsFlow):
                 vol.Required(CONF_FOG_MIN_FACTOR): _number(0.05, 1.0, 0.05),
             }
         )
+        weather = vol.Schema(
+            {
+                vol.Required(CONF_WEATHER_MODE): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[mode.value for mode in WeatherMode],
+                        translation_key=CONF_WEATHER_MODE,
+                        mode=SelectSelectorMode.LIST,
+                    )
+                ),
+                vol.Optional(CONF_WEATHER_STATION): TextSelector(),
+                vol.Required(CONF_WEATHER_TRUST): _number(0.1, 1.0, 0.05),
+            }
+        )
         archive = vol.Schema(
             {
                 vol.Required(CONF_ARCHIVE_ENABLED): BooleanSelector(),
@@ -241,6 +268,7 @@ class PvForecastCorrectionOptionsFlow(OptionsFlow):
             SECTION_INPUTS: (inputs, False),
             SECTION_LEVEL: (level, True),
             SECTION_FOG: (fog, True),
+            SECTION_WEATHER: (weather, True),
             SECTION_ARCHIVE: (archive, True),
         }
         schema = vol.Schema(
@@ -255,3 +283,15 @@ class PvForecastCorrectionOptionsFlow(OptionsFlow):
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
+
+    async def _validate_station(self, data: Mapping[str, Any]) -> str | None:
+        station = str(data.get(CONF_WEATHER_STATION) or "").strip().upper()
+        if not station:
+            return None
+        if not STATION_PATTERN.match(station):
+            return "invalid_station"
+        try:
+            known = {item.id for item in await async_stations(self.hass)}
+        except WeatherError:
+            return None  # cannot check now; a wrong station shows up in the weather sensor
+        return None if station in known else "unknown_station"

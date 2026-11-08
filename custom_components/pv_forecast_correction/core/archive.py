@@ -17,13 +17,14 @@ import threading
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from .forecast_format import Forecast, ForecastPoint
 from .level import DayStats
 from .score import DayReport
 from .timeline import as_utc
+from .weather import WeatherForecast, WeatherPoint
 
 SCHEMA_VERSION = 1
 
@@ -70,7 +71,27 @@ CREATE TABLE IF NOT EXISTS day_report (
     report TEXT NOT NULL,
     stats  TEXT
 );
+CREATE TABLE IF NOT EXISTS weather_snapshot (
+    id          INTEGER PRIMARY KEY,
+    captured_at INTEGER NOT NULL,
+    issued_at   INTEGER NOT NULL,
+    station     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS weather_snapshot_time ON weather_snapshot (captured_at);
+CREATE TABLE IF NOT EXISTS weather_value (
+    snapshot_id INTEGER NOT NULL REFERENCES weather_snapshot (id) ON DELETE CASCADE,
+    hour_start  INTEGER NOT NULL,
+    irradiance  REAL,
+    relative    REAL,
+    sunshine    REAL,
+    fog         REAL,
+    low_cloud   REAL,
+    PRIMARY KEY (snapshot_id, hour_start)
+) WITHOUT ROWID;
 """
+
+WEATHER_HORIZON = timedelta(hours=72)
+"""Only the next three days of a weather run are archived (a run covers ten)."""
 
 
 class ArchiveError(Exception):
@@ -84,6 +105,14 @@ class Snapshot:
     captured_at: datetime
     forecast: Forecast
     refreshed: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class WeatherSnapshot:
+    """A weather run as it was known at ``captured_at``."""
+
+    captured_at: datetime
+    forecast: WeatherForecast
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +264,34 @@ class Archive:
             )
         return snapshot_id
 
+    def add_weather(self, captured_at: datetime, forecast: WeatherForecast) -> int:
+        """Store a weather run (its next three days)."""
+        horizon = as_utc(captured_at) + WEATHER_HORIZON
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                "INSERT INTO weather_snapshot (captured_at, issued_at, station) VALUES (?, ?, ?)",
+                (_ts(captured_at), _ts(forecast.issued_at), forecast.station),
+            )
+            snapshot_id = int(cursor.lastrowid or 0)
+            conn.executemany(
+                "INSERT INTO weather_value (snapshot_id, hour_start, irradiance, relative,"
+                " sunshine, fog, low_cloud) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        snapshot_id,
+                        _ts(p.start),
+                        p.irradiance,
+                        p.relative,
+                        p.sunshine,
+                        p.fog,
+                        p.low_cloud,
+                    )
+                    for p in forecast.points
+                    if p.start < horizon
+                ],
+            )
+        return snapshot_id
+
     def add_bins(self, bins: Iterable[MeasuredBin]) -> None:
         """Insert or replace measured bins."""
         with self._transaction() as conn:
@@ -288,6 +345,7 @@ class Archive:
         cutoff = _ts(before)
         with self._transaction() as conn:
             conn.execute("DELETE FROM base_snapshot WHERE captured_at < ?", (cutoff,))
+            conn.execute("DELETE FROM weather_snapshot WHERE captured_at < ?", (cutoff,))
             conn.execute("DELETE FROM actual WHERE bin_start < ?", (cutoff,))
             conn.execute("DELETE FROM correction WHERE ts < ?", (cutoff,))
             conn.execute(
@@ -298,7 +356,15 @@ class Archive:
     def clear(self) -> None:
         """Delete all archived data."""
         with self._transaction() as conn:
-            for table in ("base_value", "base_snapshot", "actual", "correction", "day_report"):
+            for table in (
+                "base_value",
+                "base_snapshot",
+                "weather_value",
+                "weather_snapshot",
+                "actual",
+                "correction",
+                "day_report",
+            ):
                 conn.execute(f"DELETE FROM {table}")
 
     # ------------------------------------------------------------------ reading
@@ -327,6 +393,33 @@ class Archive:
         return [
             Snapshot(_dt(captured), Forecast.from_points(values.get(sid, [])), bool(refreshed))
             for sid, captured, refreshed in heads
+        ]
+
+    def weather_snapshots(
+        self, start: datetime | None = None, end: datetime | None = None
+    ) -> list[WeatherSnapshot]:
+        """Weather runs captured in ``[start, end)``, oldest first."""
+        lo = _ts(start) if start else 0
+        hi = _ts(end) if end else 2**62
+        heads = self._query(
+            "SELECT id, captured_at, issued_at, station FROM weather_snapshot"
+            " WHERE captured_at >= ? AND captured_at < ? ORDER BY captured_at, id",
+            (lo, hi),
+        )
+        values: dict[int, list[WeatherPoint]] = {}
+        for snapshot_id, hour, *rest in self._query(
+            "SELECT v.snapshot_id, v.hour_start, v.irradiance, v.relative, v.sunshine, v.fog,"
+            " v.low_cloud FROM weather_value v JOIN weather_snapshot s ON s.id = v.snapshot_id"
+            " WHERE s.captured_at >= ? AND s.captured_at < ? ORDER BY v.hour_start",
+            (lo, hi),
+        ):
+            values.setdefault(snapshot_id, []).append(WeatherPoint(_dt(hour), *rest))
+        return [
+            WeatherSnapshot(
+                _dt(captured),
+                WeatherForecast(station, _dt(issued), tuple(values.get(sid, []))),
+            )
+            for sid, captured, issued, station in heads
         ]
 
     def bins(self, start: datetime | None = None, end: datetime | None = None) -> list[MeasuredBin]:
@@ -366,6 +459,7 @@ class Archive:
             ("snapshots", "base_snapshot", "captured_at"),
             ("bins", "actual", "bin_start"),
             ("corrections", "correction", "ts"),
+            ("weather", "weather_snapshot", "captured_at"),
         ):
             count, first, last = self._query(
                 f"SELECT COUNT(*), MIN({column}), MAX({column}) FROM {table}"
@@ -414,6 +508,24 @@ class Archive:
                 "SELECT ts, level_factor, fog_applied, fog_shadow, k_morning, k_recent,"
                 " fog_reason, today_kwh, remaining_kwh, tomorrow_kwh FROM correction ORDER BY ts",
                 (0,),
+            ),
+            "weather.csv": (
+                [
+                    "captured_at",
+                    "issued_at",
+                    "station",
+                    "hour_start",
+                    "irradiance_kwh_m2",
+                    "relative_pct",
+                    "sunshine_h",
+                    "fog_pct",
+                    "low_cloud_pct",
+                ],
+                "SELECT s.captured_at, s.issued_at, s.station, v.hour_start, v.irradiance,"
+                " v.relative, v.sunshine, v.fog, v.low_cloud FROM weather_value v"
+                " JOIN weather_snapshot s ON s.id = v.snapshot_id"
+                " ORDER BY s.captured_at, s.id, v.hour_start",
+                (0, 1, 3),
             ),
             "day_report.csv": (
                 ["day", "report", "stats"],

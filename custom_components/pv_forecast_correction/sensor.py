@@ -20,11 +20,12 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import DOMAIN, WEATHER_ATTRIBUTION
 from .coordinator import CorrectionCoordinator, PvForecastCorrectionConfigEntry
 from .core import DayForecast, Result
 from .core.forecast_format import detailed_forecast, detailed_hourly, rounded_energy
-from .core.score import BASE, CORRECTED, SHADOW, DayReport, VariantErrors
+from .core.score import BASE, CORRECTED, SHADOW, WEATHER, DayReport, VariantErrors
+from .core.weather import WeatherMode
 
 PARALLEL_UPDATES = 0
 
@@ -110,13 +111,63 @@ def _error_attributes(report: DayReport | None, variant: str) -> dict[str, Any]:
     if variant == CORRECTED:
         attributes["level_factor"] = _round(report.level_factor)
         attributes["fog_active"] = report.fog_active
-        shadow = report.variants.get(SHADOW)
-        if shadow is not None:
-            attributes |= {
-                key: value
-                for key, value in _variant_attributes(shadow, "shadow_").items()
-                if value is not None
-            }
+        for name, prefix in ((SHADOW, "shadow_"), (WEATHER, "weather_")):
+            other = report.variants.get(name)
+            if other is not None:
+                attributes |= {
+                    key: value
+                    for key, value in _variant_attributes(other, prefix).items()
+                    if value is not None
+                }
+    return attributes
+
+
+def _weather_status(coordinator: CorrectionCoordinator, result: Result) -> str:
+    weather = result.weather
+    if weather is None or weather.mode is WeatherMode.OFF:
+        return "disabled"
+    if coordinator.weather_error is not None or weather.issued_at is None:
+        return "unavailable"
+    if weather.rest_factor is None and weather.tomorrow_factor is None:
+        return "no_overlap"
+    return "learned" if weather.learned else "learning"
+
+
+def _weather_value(result: Result) -> float | None:
+    weather = result.weather
+    if weather is None or weather.mode is WeatherMode.OFF:
+        return None
+    return _round(weather.rest_factor if weather.rest_factor is not None else None)
+
+
+def _weather_attributes(coordinator: CorrectionCoordinator, result: Result) -> dict[str, Any]:
+    weather = result.weather
+    station = coordinator.weather_station
+    attributes: dict[str, Any] = {
+        "mode": coordinator.settings.weather.mode.value,
+        "status": _weather_status(coordinator, result),
+        "station": None if station is None else station.id,
+        "station_name": None if station is None else station.name.title() or None,
+        "station_distance_km": None if station is None else _round(station.distance_km, 1),
+        "trust": coordinator.settings.weather.trust,
+    }
+    if coordinator.weather_error is not None:
+        attributes["error"] = coordinator.weather_error
+    if weather is None or weather.mode is WeatherMode.OFF:
+        return attributes
+    attributes |= {
+        "issued_at": weather.issued_at,
+        "tomorrow_factor": _round(weather.tomorrow_factor),
+        "rest_today_kwh": _round(weather.rest_estimate, 2),
+        "tomorrow_kwh": _round(weather.tomorrow_estimate, 2),
+        "factors_today": weather.hours_today,
+        "factors_tomorrow": weather.hours_tomorrow,
+        "sunshine_rest_today_h": _round(weather.sunshine_today, 1),
+        "sunshine_tomorrow_h": _round(weather.sunshine_tomorrow, 1),
+        "fog_probability_rest_today": weather.fog_today,
+        "fog_probability_tomorrow": weather.fog_tomorrow,
+        "days_learned": weather.typical.days_used if weather.learned else 0,
+    }
     return attributes
 
 
@@ -211,6 +262,14 @@ SENSORS: tuple[CorrectionSensorDescription, ...] = (
         },
     ),
     CorrectionSensorDescription(
+        key="weather_factor",
+        translation_key="weather_factor",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=3,
+        value=lambda _c, r: _weather_value(r),
+        attributes=lambda c, r, _tz: _weather_attributes(c, r),
+    ),
+    CorrectionSensorDescription(
         key="error_base",
         translation_key="error_base",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
@@ -270,6 +329,8 @@ class CorrectionSensor(CoordinatorEntity[CorrectionCoordinator], SensorEntity):
         self.entity_description = description
         entry = coordinator.config_entry
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+        if description.key == "weather_factor":
+            self._attr_attribution = WEATHER_ATTRIBUTION
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,

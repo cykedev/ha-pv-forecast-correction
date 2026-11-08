@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, tzinfo
 
-from .archive import MeasuredBin, Snapshot
+from .archive import MeasuredBin, Snapshot, WeatherSnapshot
 from .engine import Corrector, Settings
 from .level import DayStats
 from .score import DayReport
@@ -35,6 +35,7 @@ def replay(
     end: datetime | None = None,
     step: timedelta = BIN,
     offset: timedelta = UPDATE_OFFSET,
+    weather: Sequence[WeatherSnapshot] = (),
 ) -> ReplayResult:
     """Feed snapshots and bins in time order and update the engine every ``step``.
 
@@ -44,6 +45,7 @@ def replay(
     midnight of the first day with data and stops after the last bin.
     """
     ordered_snapshots = sorted(snapshots, key=lambda s: s.captured_at)
+    ordered_weather = sorted(weather, key=lambda s: s.captured_at)
     ordered_bins = sorted(bins, key=lambda b: b.start)
     if not ordered_snapshots or not ordered_bins:
         return ReplayResult(settings, {}, {})
@@ -82,8 +84,17 @@ def replay(
         engine.update(when)
         collect()
 
-    snap_index = 0
+    snap_index = weather_index = 0
     while current <= stop:
+        while (
+            weather_index < len(ordered_weather)
+            and ordered_weather[weather_index].captured_at <= current
+        ):
+            engine.set_weather(
+                ordered_weather[weather_index].forecast,
+                ordered_weather[weather_index].captured_at,
+            )
+            weather_index += 1
         # Live, a changed base forecast triggers an update right away; do the same here.
         while (
             snap_index < len(ordered_snapshots)

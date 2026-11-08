@@ -49,11 +49,14 @@ from .const import (
     UPDATE_MINUTES,
     UPDATE_SECOND,
     WARN_AFTER_MINUTES,
+    WEATHER_FETCH_MINUTE,
 )
 from .core import Corrector, Forecast, ForecastFormatError, Result, Settings, parse_forecast
 from .core.archive import Archive, ArchiveError, CorrectionRow, MeasuredBin
 from .core.history import HOUR, days_from_hourly
 from .core.timeline import day_bounds, local_day, steps
+from .core.weather import Station, WeatherError, WeatherMode
+from .weather_source import async_fetch_mosmix, async_nearest_station, async_station
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -148,6 +151,9 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
         self._actual_problem = _Problem(hass, issue_id("actual", entry), "actual_unavailable")
         self._archived_report: Any = None
         self._pending_base: CALLBACK_TYPE | None = None
+        self.weather_station: Station | None = None
+        self.weather_error: str | None = None
+        self._weather_modified: str | None = None
 
     @property
     def archive_path(self) -> Path:
@@ -215,6 +221,13 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
                 )
             )
         self._unsubscribe.append(async_at_started(self.hass, self._on_started))
+        if self.settings.weather.mode is not WeatherMode.OFF:
+            self._unsubscribe.append(
+                async_track_time_change(
+                    self.hass, self._on_weather_tick, minute=WEATHER_FETCH_MINUTE, second=30
+                )
+            )
+            self._on_weather_tick(dt_util.utcnow())
         now = dt_util.utcnow()
         self._read_inputs(now, base=True)
         self._refresh(now)
@@ -252,6 +265,44 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
     def _on_started(self, _hass: HomeAssistant) -> None:
         now = dt_util.utcnow()
         self._read_inputs(now, base=True)
+        self._refresh(now)
+
+    @callback
+    def _on_weather_tick(self, _fired_at: datetime) -> None:
+        self.config_entry.async_create_background_task(
+            self.hass, self.async_update_weather(), f"{DOMAIN} weather"
+        )
+
+    async def async_update_weather(self) -> None:
+        """Fetch the latest MOSMIX run of the station and use it if it is new."""
+        wanted = self.settings.weather.station
+        try:
+            if self.weather_station is None or (wanted and self.weather_station.id != wanted):
+                if wanted:
+                    found = await async_station(self.hass, wanted)
+                    self.weather_station = found or Station(wanted, "", 0.0, 0.0)
+                else:
+                    self.weather_station = await async_nearest_station(self.hass)
+            fetched = await async_fetch_mosmix(
+                self.hass, self.weather_station.id, self._weather_modified
+            )
+        except WeatherError as err:
+            if str(err) != self.weather_error:
+                _LOGGER.warning("Weather forecast not available: %s", err)
+            self.weather_error = str(err)
+            self.engine.weather_unavailable()
+            self._refresh(dt_util.utcnow())
+            return
+        if self.weather_error is not None:
+            _LOGGER.info("Weather forecast available again")
+        self.weather_error = None
+        self._weather_modified = fetched.last_modified
+        if fetched.forecast is None:
+            return  # not changed since the last download
+        now = dt_util.utcnow()
+        new = self.engine.set_weather(fetched.forecast, now)
+        if new and self.archive is not None:
+            self._archive_job("weather", self.archive.add_weather, now, fetched.forecast)
         self._refresh(now)
 
     @callback

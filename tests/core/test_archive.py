@@ -56,6 +56,7 @@ def test_day_reports_and_corrections(archive, tmp_path):
         "base_forecast.csv",
         "actual.csv",
         "correction.csv",
+        "weather.csv",
         "day_report.csv",
     }
     assert "level_factor" in (tmp_path / "export" / "correction.csv").read_text()

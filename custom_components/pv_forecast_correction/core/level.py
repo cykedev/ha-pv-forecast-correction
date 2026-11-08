@@ -68,6 +68,8 @@ class DayStats:
     """Day sums imported from elsewhere (e.g. a replay of older data), not measured here."""
     hours: tuple[tuple[int, float, float], ...] = ()
     """``(local hour, actual kWh, forecast kWh)`` of the used intervals, per clock hour."""
+    weather: tuple[tuple[int, float, float], ...] = ()
+    """``(local hour, weather irradiance, base kWh)`` of record, for the weather layer."""
 
     @property
     def daylight(self) -> int:
@@ -103,6 +105,8 @@ class DayStats:
             data["imported"] = True
         if self.hours:
             data["hours"] = [[h, round(a, 4), round(f, 4)] for h, a, f in self.hours]
+        if self.weather:
+            data["weather"] = [[h, round(g, 5), round(b, 4)] for h, g, b in self.weather]
         return data
 
     @classmethod
@@ -116,6 +120,7 @@ class DayStats:
             missing=int(data["missing"]),
             imported=bool(data.get("imported", False)),
             hours=tuple((int(h), float(a), float(f)) for h, a, f in data.get("hours", [])),
+            weather=tuple((int(h), float(g), float(b)) for h, g, b in data.get("weather", [])),
         )
 
     @classmethod

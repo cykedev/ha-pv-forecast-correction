@@ -8,9 +8,10 @@ compared at the same checkpoints: day total as of 07:00, rest of the day as of 0
 14:00, tomorrow as of 21:00.
 
 Variants:
-  base         the base forecast as it was published
-  level        layer A (level factor), fog layer off
-  level+fog    layer A plus layer B, one run per gate candidate
+  base           the base forecast as it was published
+  level          layer A (level factor), fog layer off
+  level+fog      layer A plus layer B, one run per gate candidate
+  level+weather  layer A plus layer C (DWD MOSMIX), when the archive holds weather runs
 
 Usage:
   python tools/replay.py ARCHIVE [--from 2026-06-01] [--to 2026-10-01] [--days]
@@ -63,6 +64,13 @@ from pvfc_core.score import (  # noqa: E402
     gate_criteria,
     spells,
 )
+from pvfc_core.weather import WeatherMode, WeatherSettings  # noqa: E402
+
+WEATHER_VARIANTS = {
+    "trust 0.5": {"trust": 0.5},
+    "trust 1": {"trust": 1.0},
+    "trust 1, only lowers": {"trust": 1.0, "max_factor": 1.0},
+}
 
 DEFAULT_GATES = (
     FogGate(None, None),
@@ -242,13 +250,14 @@ def main(argv: list[str] | None = None) -> int:
 
     snapshots = archive.snapshots()
     bins = archive.bins()
+    weather = archive.weather_snapshots()
     archive.close()
     has_band = any(snapshot.forecast.has_bands for snapshot in snapshots)
 
     def run(settings: Settings) -> ReplayResult:
         # The engine always runs over the whole archive, so the level factor is warmed
         # up when the reported range starts.
-        return replay(snapshots, bins, settings, tz)
+        return replay(snapshots, bins, settings, tz, weather=weather)
 
     level_run = run(Settings(level=level, fog=replace(fog_base, mode=FogMode.OFF)))
     one_factor_run = (
@@ -260,6 +269,20 @@ def main(argv: list[str] | None = None) -> int:
         gate: run(Settings(level=level, fog=replace(fog_base, mode=FogMode.ON, gate=gate)))
         for gate in DEFAULT_GATES
     }
+    weather_runs = (
+        {
+            label: run(
+                Settings(
+                    level=level,
+                    fog=replace(fog_base, mode=FogMode.OFF),
+                    weather=WeatherSettings(mode=WeatherMode.ON, **options),
+                )
+            )
+            for label, options in WEATHER_VARIANTS.items()
+        }
+        if weather
+        else {}
+    )
 
     def in_range(day: date) -> bool:
         return (args.first is None or day >= args.first) and (args.last is None or day <= args.last)
@@ -303,6 +326,11 @@ def main(argv: list[str] | None = None) -> int:
         ]
         fog_reports = [r for r in fog_reports if in_range(r.day)]
         rows.append(_row(f"level + fog ({gate.name})", fog_reports, CORRECTED, classes))
+    for label, weather_run in weather_runs.items():
+        weather_reports = [
+            r for d, r in sorted(weather_run.reports.items()) if in_range(d) and r.complete
+        ]
+        rows.append(_row(f"level + weather ({label})", weather_reports, CORRECTED, classes))
     print("Mean absolute error in kWh (rest of day at 09-14 h, day total as of 07 h, ")
     print("tomorrow as of 21 h the evening before).\n")
     print(_table(header, rows))
@@ -342,6 +370,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Active on {len(active)} days in {len(spells(active))} spells.\n")
         criteria = gate_criteria(
             fog_reports,
+            level_reports,
+            ref_variant=CORRECTED,
+            classes=classes,
+            classes_checked=(CLEAR, MIXED),
+        )
+        print(_criteria_table(criteria))
+        print(f"\nVerdict: {_verdict(criteria)}")
+    if weather_runs:
+        stations = sorted({snapshot.forecast.station for snapshot in weather})
+        print(f"\nWeather runs: {len(weather)} from station {', '.join(stations)}.")
+    for label, weather_run in weather_runs.items():
+        weather_reports = {
+            d: r for d, r in weather_run.reports.items() if in_range(d) and r.complete
+        }
+        print(f"\n## Layer C (weather, {label}) against layer A alone\n")
+        criteria = gate_criteria(
+            weather_reports,
             level_reports,
             ref_variant=CORRECTED,
             classes=classes,

@@ -21,6 +21,7 @@ CAPTURE_WINDOW = timedelta(minutes=15)
 BASE = "base"
 CORRECTED = "corrected"
 SHADOW = "shadow"
+WEATHER = "weather"
 
 
 def checkpoint_key(wall: time) -> str:
