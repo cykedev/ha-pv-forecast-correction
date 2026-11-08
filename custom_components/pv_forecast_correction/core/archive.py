@@ -328,6 +328,27 @@ class Archive:
             )
         return result
 
+    def stats(self) -> dict[str, object]:
+        """Row counts and time ranges per table (diagnostics)."""
+        result: dict[str, object] = {}
+        for name, table, column in (
+            ("snapshots", "base_snapshot", "captured_at"),
+            ("bins", "actual", "bin_start"),
+            ("corrections", "correction", "ts"),
+        ):
+            count, first, last = self._query(
+                f"SELECT COUNT(*), MIN({column}), MAX({column}) FROM {table}"
+            )[0]
+            result[name] = {
+                "count": count,
+                "first": None if first is None else _dt(first).isoformat(),
+                "last": None if last is None else _dt(last).isoformat(),
+            }
+        count, first, last = self._query("SELECT COUNT(*), MIN(day), MAX(day) FROM day_report")[0]
+        result["days"] = {"count": count, "first": first, "last": last}
+        result["size_bytes"] = self.path.stat().st_size if self.path.exists() else 0
+        return result
+
     def export_csv(self, directory: str | Path) -> list[Path]:
         """Write every table as CSV (ISO timestamps) into ``directory``."""
         target = Path(directory)

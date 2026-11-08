@@ -15,6 +15,12 @@ async def async_get_config_entry_diagnostics(
 ) -> dict[str, Any]:
     coordinator = entry.runtime_data
     engine = coordinator.engine
+    archive_stats = None
+    if coordinator.archive is not None:
+        try:
+            archive_stats = await hass.async_add_executor_job(coordinator.archive.stats)
+        except Exception as err:  # diagnostics must not fail because of the archive
+            archive_stats = {"error": str(err)}
     return {
         "config": merged(entry.data, entry.options),
         "settings": settings_dict(coordinator.settings),
@@ -23,6 +29,7 @@ async def async_get_config_entry_diagnostics(
             "open": coordinator.archive is not None,
             "path": str(coordinator.archive_path),
             "last_error": coordinator.archive_error,
+            "content": archive_stats,
         },
         "last_error": coordinator.last_error,
         "engine": {

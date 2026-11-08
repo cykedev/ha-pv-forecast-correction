@@ -96,3 +96,16 @@ def test_older_files_get_new_columns(tmp_path):
     store.close()
     assert item.gap_s == 0.0
     assert item.energy_kwh == 1.0
+
+
+def test_stats_summarise_the_tables(archive):
+    start, _ = day_bounds(DAY, TZ)
+    assert archive.stats()["snapshots"]["count"] == 0
+    archive.add_snapshot(start, forecast([DAY]), refreshed=True)
+    archive.add_bins(bins_from(curve(DAY), 1.0))
+    stats = archive.stats()
+    assert stats["snapshots"]["count"] == 1
+    assert stats["snapshots"]["first"] == start.isoformat()
+    assert stats["bins"]["count"] == 288
+    assert stats["days"]["count"] == 0
+    assert stats["size_bytes"] > 0
