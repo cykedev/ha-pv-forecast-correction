@@ -81,3 +81,46 @@ def test_round_trip():
     level = compute_level_factor(history, TODAY, LevelSettings())
     assert type(level).from_dict(level.to_dict()) == level
     assert DayStats.from_dict(history[0].to_dict()) == history[0]
+
+
+def hourly(day: date, morning: float, midday: float, *, dawn: float = 0.3) -> DayStats:
+    """A day whose morning hours (8-10) run at ``morning`` and midday (11-15) at ``midday``
+    of the forecast; one weak hour at dawn (7) runs at ``dawn``."""
+    hours = [(7, 0.1 * dawn, 0.1)]
+    hours += [(h, 2.0 * morning, 2.0) for h in (8, 9, 10)]
+    hours += [(h, 3.0 * midday, 3.0) for h in (11, 12, 13, 14, 15)]
+    actual = sum(a for _, a, _ in hours)
+    forecast = sum(f for _, _, f in hours)
+    return DayStats(day, actual, forecast, 18, 0, 0, hours=tuple(hours))
+
+
+def test_time_curve_follows_the_hours_and_shrinks_weak_ones():
+    history = [hourly(TODAY - timedelta(days=d), 0.4, 0.8) for d in range(1, 15)]
+    level = compute_level_factor(history, TODAY, LevelSettings(by_time=True))
+    curve = dict(level.curve)
+    assert curve[9] < level.factor < curve[12]
+    assert curve[9] == pytest.approx(0.4, abs=0.05)
+    assert curve[12] == pytest.approx(0.8, abs=0.05)
+    # The dawn hour carries almost no energy: it stays near the day factor, not at 0.3.
+    assert abs(curve[7] - level.factor) < abs(0.3 - level.factor) / 2
+    assert level.at(9) == curve[9]
+    assert level.at(3) == level.factor  # hours without data use the day factor
+
+
+def test_time_curve_off_or_without_hourly_data():
+    history = [hourly(TODAY - timedelta(days=d), 0.4, 0.8) for d in range(1, 5)]
+    assert compute_level_factor(history, TODAY, LevelSettings(by_time=False)).curve == ()
+    imported = [DayStats.imported_sums(TODAY - timedelta(days=d), 7.0, 10.0) for d in range(1, 5)]
+    level = compute_level_factor(imported, TODAY, LevelSettings(by_time=True))
+    assert level.curve == ()
+    assert level.at(9) == level.factor
+
+
+def test_day_stats_keep_hourly_sums_and_round_trip():
+    measured = IntervalActual(1.0, 1.0, False)
+    result = day_stats(TODAY, [(2.0, measured, 9), (2.0, measured, 9), (4.0, measured, 12)])
+    assert result.hours == ((9, 2.0, 2.0), (12, 1.0, 2.0))
+    assert DayStats.from_dict(result.to_dict()) == result
+    history = [hourly(TODAY - timedelta(days=d), 0.4, 0.8) for d in range(1, 4)]
+    level = compute_level_factor(history, TODAY, LevelSettings(by_time=True))
+    assert type(level).from_dict(level.to_dict()) == level

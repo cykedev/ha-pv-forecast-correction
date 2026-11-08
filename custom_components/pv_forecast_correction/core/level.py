@@ -7,6 +7,16 @@ record: the value the base forecast held for an interval when the interval began
 Curtailed intervals and intervals without measurements are left out of both sums. The
 K pseudo-days at ratio 1 shrink the factor toward 1.0, so a fresh install starts
 neutral.
+
+The factor can also vary over the day (time-of-day curve): the same sums per local clock
+hour give a factor per hour, shrunk toward the day factor with W pseudo-days of an
+average daylight hour,
+
+    f_h = (actual_h + W * mean_hour * f) / (forecast_h + W * mean_hour)
+
+so hours with little energy (dawn, dusk) stay close to the day factor, while hours that
+run systematically below or above the rest of the day (morning fog in winter, shade at
+low sun that the base does not know) get their own value.
 """
 
 from __future__ import annotations
@@ -31,6 +41,9 @@ class LevelSettings:
     shrink_days: float = 2.0
     min_factor: float = 0.3
     max_factor: float = 1.5
+    by_time: bool = True
+    """Learn a factor per local clock hour (time-of-day curve)."""
+    time_shrink_days: float = 2.0
 
     @property
     def max_age_days(self) -> int:
@@ -50,6 +63,8 @@ class DayStats:
     missing: int
     imported: bool = False
     """Day sums imported from elsewhere (e.g. a replay of older data), not measured here."""
+    hours: tuple[tuple[int, float, float], ...] = ()
+    """``(local hour, actual kWh, forecast kWh)`` of the used intervals, per clock hour."""
 
     @property
     def daylight(self) -> int:
@@ -83,6 +98,8 @@ class DayStats:
         }
         if self.imported:
             data["imported"] = True
+        if self.hours:
+            data["hours"] = [[h, round(a, 4), round(f, 4)] for h, a, f in self.hours]
         return data
 
     @classmethod
@@ -95,6 +112,7 @@ class DayStats:
             curtailed=int(data["curtailed"]),
             missing=int(data["missing"]),
             imported=bool(data.get("imported", False)),
+            hours=tuple((int(h), float(a), float(f)) for h, a, f in data.get("hours", [])),
         )
 
     @classmethod
@@ -103,17 +121,24 @@ class DayStats:
         return cls(day, actual_kwh, forecast_kwh, 0, 0, 0, imported=True)
 
 
-def day_stats(day: date, intervals: Iterable[tuple[float | None, IntervalActual]]) -> DayStats:
-    """Summarise a day from ``(forecast of record in kW, measured)`` per interval.
+def day_stats(
+    day: date,
+    intervals: Iterable[
+        tuple[float | None, IntervalActual] | tuple[float | None, IntervalActual, int]
+    ],
+) -> DayStats:
+    """Summarise a day from ``(forecast of record in kW, measured[, local hour])`` per
+    interval.
 
     Intervals without a forecast are ignored unless production was measured in them
     (night, or a sensor that is silent at night). A missing forecast of record next to
     measured production, or a forecast interval without enough readings, counts as
-    missing data.
+    missing data. With the local hour, the used sums are also kept per clock hour.
     """
     actual = forecast = 0.0
     used = curtailed = missing = 0
-    for record_kw, measured in intervals:
+    per_hour: dict[int, list[float]] = {}
+    for record_kw, measured, *rest in intervals:
         has_forecast = record_kw is not None and record_kw > 0
         if not has_forecast and (measured.energy_kwh <= 0 or not measured.measured):
             continue
@@ -125,7 +150,12 @@ def day_stats(day: date, intervals: Iterable[tuple[float | None, IntervalActual]
             used += 1
             actual += measured.energy_kwh
             forecast += record_kw * INTERVAL_HOURS
-    return DayStats(day, actual, forecast, used, curtailed, missing)
+            if rest:
+                sums = per_hour.setdefault(int(rest[0]), [0.0, 0.0])
+                sums[0] += measured.energy_kwh
+                sums[1] += record_kw * INTERVAL_HOURS
+    hours = tuple((h, a, f) for h, (a, f) in sorted(per_hour.items()))
+    return DayStats(day, actual, forecast, used, curtailed, missing, hours=hours)
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +170,14 @@ class LevelFactor:
     computed_at: datetime | None = None
     clamped: bool = False
     days: tuple[date, ...] = field(default=())
+    curve: tuple[tuple[int, float], ...] = field(default=())
+    """Factor per local clock hour, when learned; other hours use ``factor``."""
+
+    def at(self, hour: int | None) -> float:
+        """Factor for an interval in the given local clock hour."""
+        if hour is None or not self.curve:
+            return self.factor
+        return dict(self.curve).get(hour, self.factor)
 
     @property
     def raw_ratio(self) -> float | None:
@@ -156,6 +194,7 @@ class LevelFactor:
             "computed_at": None if self.computed_at is None else self.computed_at.isoformat(),
             "clamped": self.clamped,
             "days": [d.isoformat() for d in self.days],
+            "curve": [[h, f] for h, f in self.curve],
         }
 
     @classmethod
@@ -170,6 +209,7 @@ class LevelFactor:
             computed_at=None if computed is None else datetime.fromisoformat(computed),
             clamped=bool(data.get("clamped", False)),
             days=tuple(date.fromisoformat(d) for d in data.get("days", [])),
+            curve=tuple((int(h), float(f)) for h, f in data.get("curve", [])),
         )
 
 
@@ -198,6 +238,7 @@ def compute_level_factor(
     weight = settings.shrink_days * sum_forecast / len(used)
     raw = (sum_actual + weight) / (sum_forecast + weight)
     factor = min(max(raw, settings.min_factor), settings.max_factor)
+    curve = _time_curve(used, factor, settings) if settings.by_time else ()
     return LevelFactor(
         factor=factor,
         days_used=len(used),
@@ -207,4 +248,30 @@ def compute_level_factor(
         computed_at=computed_at,
         clamped=factor != raw,
         days=tuple(s.day for s in used),
+        curve=curve,
     )
+
+
+def _time_curve(
+    used: list[DayStats], factor: float, settings: LevelSettings
+) -> tuple[tuple[int, float], ...]:
+    """Factor per local clock hour, shrunk toward the day factor."""
+    sums: dict[int, list[float]] = {}
+    for stats in used:
+        for hour, actual, forecast in stats.hours:
+            if forecast <= 0:
+                continue
+            entry = sums.setdefault(hour, [0.0, 0.0, 0.0])
+            entry[0] += actual
+            entry[1] += forecast
+            entry[2] += 1
+    if not sums:
+        return ()
+    mean_hour = sum(forecast / days for _, forecast, days in sums.values()) / len(sums)
+    weight = settings.time_shrink_days * mean_hour
+    curve = []
+    for hour in sorted(sums):
+        actual, forecast, _ = sums[hour]
+        value = (actual + weight * factor) / (forecast + weight)
+        curve.append((hour, min(max(value, settings.min_factor), settings.max_factor)))
+    return tuple(curve)

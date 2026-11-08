@@ -8,6 +8,7 @@ from pvfc_core.archive import Snapshot
 from pvfc_core.engine import Corrector, Settings
 from pvfc_core.fog import FogGate, FogMode, FogReason, FogSettings
 from pvfc_core.forecast_format import Forecast, ForecastPoint, energy
+from pvfc_core.level import LevelSettings
 from pvfc_core.replay import replay
 from pvfc_core.score import BASE, CORRECTED, SHADOW
 from pvfc_core.timeline import BIN, INTERVAL, day_bounds, local_time
@@ -359,3 +360,29 @@ def test_imported_days_teach_the_level_factor_at_once():
     )
     restored = Corrector.from_dict(engine.to_dict(), Settings(), TZ)
     assert restored.history[FIRST - timedelta(days=2)].imported
+
+
+def test_time_curve_corrects_weak_mornings():
+    """Mornings (before 11:00) deliver 40 % of the forecast, the rest of the day 90 %."""
+    days = day_range(FIRST, 16)
+    points = [p for day in days for p in curve(day)]
+
+    def ratio(start: datetime) -> float:
+        return 0.4 if start.astimezone(TZ).hour < 11 else 0.9
+
+    bins = bins_from(points, ratio)
+    one = replay(daily_snapshots(days), bins, Settings(level=LevelSettings(by_time=False)), TZ)
+    timed = replay(daily_snapshots(days), bins, Settings(level=LevelSettings(by_time=True)), TZ)
+    last = days[-1]
+    one_errors = one.reports[last].variants[CORRECTED]
+    timed_errors = timed.reports[last].variants[CORRECTED]
+    # From 11:00 only the afternoon is left: one day factor under-forecasts it.
+    assert abs(timed_errors.rest["11:00"]) < 0.5 * abs(one_errors.rest["11:00"])
+    assert timed_errors.rest_mae < one_errors.rest_mae
+
+    engine = Corrector(Settings(level=LevelSettings(by_time=True)), TZ)
+    engine.history = dict(timed.stats)
+    engine.day = last
+    engine.recompute_level(at(last, 0, 5))
+    assert engine.level_at(at(last, 9)) == pytest.approx(0.4, abs=0.05)
+    assert engine.level_at(at(last, 13)) == pytest.approx(0.9, abs=0.05)

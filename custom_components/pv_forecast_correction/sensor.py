@@ -185,6 +185,7 @@ SENSORS: tuple[CorrectionSensorDescription, ...] = (
             "clamped": r.level.clamped,
             "computed_at": r.level.computed_at,
             "daily_ratios": _daily_ratios(r),
+            "curve": {f"{hour:02d}:00": _round(value) for hour, value in r.level.curve},
             "imported_days": [
                 stats.day.isoformat()
                 for stats in r.history

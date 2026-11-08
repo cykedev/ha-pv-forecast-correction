@@ -13,7 +13,7 @@ Typical cycle (every few minutes):
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import Any
@@ -222,6 +222,13 @@ class Corrector:
     def level_applied(self) -> float:
         return self.level.factor if self.settings.level_enabled else 1.0
 
+    def level_at(self, start: datetime) -> float:
+        """Level factor applied to the interval starting at ``start`` (time-of-day curve
+        when learned, else the day factor; 1.0 when layer A is off)."""
+        if not self.settings.level_enabled:
+            return 1.0
+        return self.level.at(as_utc(start).astimezone(self.tz).hour)
+
     @property
     def fog_applied(self) -> float:
         return self.fog.k if self.settings.fog.mode is FogMode.ON else 1.0
@@ -327,7 +334,13 @@ class Corrector:
         pairs = []
         for interval in steps(start, end, INTERVAL):
             point = self.record.get(interval)
-            pairs.append((None if point is None else point.p50, self.bins.interval(interval)))
+            pairs.append(
+                (
+                    None if point is None else point.p50,
+                    self.bins.interval(interval),
+                    interval.astimezone(self.tz).hour,
+                )
+            )
         return day_stats(day, pairs)
 
     def _today_points(self) -> list[ForecastPoint]:
@@ -342,7 +355,6 @@ class Corrector:
     def _fog_inputs(self, now: datetime) -> FogInputs:
         assert self.day is not None
         start, end = day_bounds(self.day, self.tz)
-        factor = self.level_applied
         recent_start = now - timedelta(hours=self.settings.fog.recent_hours)
         expected_morning = actual_morning = expected_recent = actual_recent = 0.0
         for interval in steps(start, end, INTERVAL):
@@ -354,13 +366,13 @@ class Corrector:
             measured = self.bins.interval(interval)
             if not measured.measured or measured.curtailed:
                 continue
-            expected = factor * point.p50 * INTERVAL_HOURS
+            expected = self.level_at(interval) * point.p50 * INTERVAL_HOURS
             expected_morning += expected
             actual_morning += measured.energy_kwh
             if interval >= recent_start:
                 expected_recent += expected
                 actual_recent += measured.energy_kwh
-        expected_day = factor * (energy(self._today_points()) or 0.0)
+        expected_day = energy(p.scaled(self.level_at(p.start)) for p in self._today_points()) or 0.0
         today_base = self.base.between(start, end)
         confidence = None
         base_p50 = energy(today_base) or 0.0
@@ -384,8 +396,15 @@ class Corrector:
 
     # ------------------------------------------------------------------ checkpoints
 
-    def _base_band(self, points: Iterable[ForecastPoint], start: datetime, end: datetime) -> Band:
-        """Energy of the base between ``start`` and ``end`` (partial intervals pro rata)."""
+    def _base_band(
+        self,
+        points: Iterable[ForecastPoint],
+        start: datetime,
+        end: datetime,
+        scale: Callable[[datetime], float] | None = None,
+    ) -> Band:
+        """Energy of the base between ``start`` and ``end`` (partial intervals pro rata),
+        optionally scaled per interval."""
         p50 = 0.0
         p10: float | None = 0.0
         p90: float | None = 0.0
@@ -393,22 +412,25 @@ class Corrector:
             seconds = overlap_seconds(point.start, point.start + INTERVAL, start, end)
             if seconds <= 0:
                 continue
-            hours = seconds / 3600
+            hours = seconds / 3600 * (1.0 if scale is None else scale(point.start))
             p50 += point.p50 * hours
             p10 = None if p10 is None or point.p10 is None else p10 + point.p10 * hours
             p90 = None if p90 is None or point.p90 is None else p90 + point.p90 * hours
         return Band(p50, p10, p90)
 
-    def _variants(self, base: Band, measured: float = 0.0) -> dict[str, Band]:
-        """Base, corrected and (in shadow mode) shadow version of a rest-of-day band."""
-        factor = self.level_applied
+    def _variants(
+        self, points: list[ForecastPoint], start: datetime, end: datetime, measured: float = 0.0
+    ) -> dict[str, Band]:
+        """Base, corrected and (in shadow mode) shadow version of the base between ``start``
+        and ``end``; ``measured`` is added to the corrected variants."""
+        corrected = self._base_band(points, start, end, self.level_at)
         bands = {
-            BASE: base,
-            CORRECTED: base.scaled(factor * self.fog_applied, measured),
+            BASE: self._base_band(points, start, end),
+            CORRECTED: corrected.scaled(self.fog_applied, measured),
         }
         shadow = self.fog_shadow
         if shadow is not None:
-            bands[SHADOW] = base.scaled(factor * shadow, measured)
+            bands[SHADOW] = corrected.scaled(shadow, measured)
         return bands
 
     def _capture_checkpoints(self, now: datetime) -> None:
@@ -423,8 +445,7 @@ class Corrector:
             and nominal <= now < nominal + CAPTURE_WINDOW
         ):
             measured = self.bins.actual(start, nominal).energy_kwh
-            rest = self._base_band(today_base, nominal, end)
-            variants = self._variants(rest, measured)
+            variants = self._variants(today_base, nominal, end, measured)
             variants[BASE] = self._base_band(today_base, start, end)
             self.checkpoints.day_total = variants
 
@@ -434,9 +455,7 @@ class Corrector:
             if key in self.checkpoints.rest or not nominal <= now < nominal + CAPTURE_WINDOW:
                 continue
             if today_base:
-                self.checkpoints.rest[key] = self._variants(
-                    self._base_band(today_base, nominal, end)
-                )
+                self.checkpoints.rest[key] = self._variants(today_base, nominal, end)
 
         nominal = local_time(self.day, DAY_AHEAD_CHECKPOINT, self.tz)
         tomorrow = self.day + timedelta(days=1)
@@ -446,10 +465,12 @@ class Corrector:
             t_start, t_end = day_bounds(tomorrow, self.tz)
             points = self.base.between(t_start, t_end)
             if points:
-                base = self._base_band(points, t_start, t_end)
                 self.next_day_ahead = (
                     tomorrow,
-                    {BASE: base, CORRECTED: base.scaled(self.level_applied)},
+                    {
+                        BASE: self._base_band(points, t_start, t_end),
+                        CORRECTED: self._base_band(points, t_start, t_end, self.level_at),
+                    },
                 )
 
     def _build_report(self, day: date, stats: DayStats) -> DayReport:
@@ -510,7 +531,6 @@ class Corrector:
         now = as_utc(now)
         day = self.day if self.day is not None else local_day(now, self.tz)
         start, end = day_bounds(day, self.tz)
-        factor = self.level_applied * self.fog_applied
         today_base = self.base.between(start, end)
         bands = bool(today_base) and all(
             p.p10 is not None and p.p90 is not None for p in today_base
@@ -521,11 +541,11 @@ class Corrector:
         rest_energy = Band(0.0, 0.0 if bands else None, 0.0 if bands else None)
         for point in today_base:
             interval_end = point.start + INTERVAL
-            corrected = point.scaled(factor)
+            corrected = point.scaled(self.level_at(point.start) * self.fog_applied)
             if interval_end <= now:
                 # Past: measured where readings cover the interval, the level-corrected
                 # forecast of record for the uncovered rest.
-                record = self.record.get(point.start, point).scaled(self.level_applied)
+                record = self.record.get(point.start, point).scaled(self.level_at(point.start))
                 today_points.append(
                     self._blend(record, self.bins.actual(point.start, interval_end), 0.0)
                 )
@@ -566,7 +586,9 @@ class Corrector:
         tomorrow_base = self.base.between(t_start, t_end)
         if tomorrow_base:
             tomorrow = self._day_forecast(
-                tomorrow_day, [p.scaled(self.level_applied) for p in tomorrow_base], tomorrow_base
+                tomorrow_day,
+                [p.scaled(self.level_at(p.start)) for p in tomorrow_base],
+                tomorrow_base,
             )
 
         return Result(

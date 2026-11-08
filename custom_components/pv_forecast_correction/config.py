@@ -19,6 +19,7 @@ from .const import (
     CONF_FOG_THRESHOLD,
     CONF_FORECAST_TODAY,
     CONF_FORECAST_TOMORROW,
+    CONF_LEVEL_BY_TIME,
     CONF_LEVEL_DAYS,
     CONF_LEVEL_ENABLED,
     CONF_LEVEL_MAX,
@@ -37,6 +38,7 @@ DEFAULTS: dict[str, Any] = {
     CONF_LEVEL_SHRINK_DAYS: _LEVEL.shrink_days,
     CONF_LEVEL_MIN: _LEVEL.min_factor,
     CONF_LEVEL_MAX: _LEVEL.max_factor,
+    CONF_LEVEL_BY_TIME: _LEVEL.by_time,
     CONF_FOG_MODE: _FOG.mode.value,
     CONF_FOG_THRESHOLD: _FOG.gate.threshold,
     CONF_FOG_CONFIDENCE: _FOG.gate.min_confidence,
@@ -99,6 +101,7 @@ def settings_from(config: Mapping[str, Any]) -> Settings:
             shrink_days=float(config[CONF_LEVEL_SHRINK_DAYS]),
             min_factor=float(config[CONF_LEVEL_MIN]),
             max_factor=float(config[CONF_LEVEL_MAX]),
+            by_time=bool(config[CONF_LEVEL_BY_TIME]),
         )
     except (KeyError, TypeError, ValueError):
         level = LevelSettings()

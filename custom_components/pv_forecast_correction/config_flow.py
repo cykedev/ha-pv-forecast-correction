@@ -38,6 +38,7 @@ from .const import (
     CONF_FOG_THRESHOLD,
     CONF_FORECAST_TODAY,
     CONF_FORECAST_TOMORROW,
+    CONF_LEVEL_BY_TIME,
     CONF_LEVEL_DAYS,
     CONF_LEVEL_ENABLED,
     CONF_LEVEL_MAX,
@@ -177,6 +178,7 @@ class PvForecastCorrectionOptionsFlow(OptionsFlow):
         level = vol.Schema(
             {
                 vol.Required(CONF_LEVEL_ENABLED): BooleanSelector(),
+                vol.Required(CONF_LEVEL_BY_TIME): BooleanSelector(),
                 vol.Required(CONF_LEVEL_DAYS): _number(3, 60, 1, "d"),
                 vol.Required(CONF_LEVEL_SHRINK_DAYS): _number(0, 14, 0.5, "d"),
                 vol.Required(CONF_LEVEL_MIN): _number(0.1, 1.0, 0.05),

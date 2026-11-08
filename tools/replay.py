@@ -196,6 +196,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--level-max", type=float, help="highest level factor")
     parser.add_argument("--fog-recent-hours", type=float, help="recent window of the fog layer")
     parser.add_argument("--fog-min-factor", type=float, help="lowest fog factor")
+    parser.add_argument(
+        "--one-factor", action="store_true", help="level factor without the time-of-day curve"
+    )
     parser.add_argument("--title", default=None, help="heading for the output")
     parser.add_argument("--days", action="store_true", help="also list every day")
     args = parser.parse_args(argv)
@@ -225,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
         min_factor=pick(args.level_min, stored_level.get("min_factor"), LevelSettings().min_factor),
         max_factor=pick(args.level_max, stored_level.get("max_factor"), LevelSettings().max_factor),
+        by_time=not args.one_factor
+        and bool(pick(None, stored_level.get("by_time"), LevelSettings().by_time)),
     )
     fog_base = FogSettings(
         recent_hours=pick(
@@ -246,6 +251,11 @@ def main(argv: list[str] | None = None) -> int:
         return replay(snapshots, bins, settings, tz)
 
     level_run = run(Settings(level=level, fog=replace(fog_base, mode=FogMode.OFF)))
+    one_factor_run = (
+        run(Settings(level=replace(level, by_time=False), fog=replace(fog_base, mode=FogMode.OFF)))
+        if level.by_time
+        else None
+    )
     fog_runs = {
         gate: run(Settings(level=level, fog=replace(fog_base, mode=FogMode.ON, gate=gate)))
         for gate in DEFAULT_GATES
@@ -261,7 +271,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"# {args.title or 'Replay ' + str(args.archive.name)}\n")
     print(
         f"Level factor: {level.days} days, start-up weight {level.shrink_days:g} days, "
-        f"limits {level.min_factor:g}-{level.max_factor:g}. Fog layer: recent window "
+        f"limits {level.min_factor:g}-{level.max_factor:g}, "
+        f"{'by time of day' if level.by_time else 'one factor per day'}. Fog layer: recent window "
         f"{fog_base.recent_hours:g} h, lowest factor {fog_base.min_factor:g}. "
         f"Time zone {tz_name}.\n"
     )
@@ -277,10 +288,15 @@ def main(argv: list[str] | None = None) -> int:
 
     header = ["variant", "MAE all", "09", "10", "11", "12", "13", "14"]
     header += ["clear", "mixed", "dull", "day 07h", "day-ahead 21h"]
-    rows = [
-        _row("base", complete, BASE, classes),
-        _row("level", complete, CORRECTED, classes),
-    ]
+    rows = [_row("base", complete, BASE, classes)]
+    if one_factor_run is not None:
+        one_factor = [
+            r for d, r in sorted(one_factor_run.reports.items()) if in_range(d) and r.complete
+        ]
+        rows.append(_row("level, one factor", one_factor, CORRECTED, classes))
+    rows.append(
+        _row("level, by time of day" if level.by_time else "level", complete, CORRECTED, classes)
+    )
     for gate, fog_run in fog_runs.items():
         fog_reports = [
             r for r in sorted(fog_run.reports.values(), key=lambda r: r.day) if r.complete

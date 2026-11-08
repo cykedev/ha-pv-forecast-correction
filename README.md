@@ -54,6 +54,13 @@ corrected = f × base                                 for today and tomorrow
   published, including any dampening the base integration applies. If the base already
   removes the bias, the factor settles near 1.0 and does nothing — that is the expected
   outcome, not a failure.
+- **By time of day** (on by default). The same sums per clock hour give a factor for every
+  hour of the day, drawn toward the day factor by two days' worth of an average daylight
+  hour. Hours that regularly run below or above the rest of the day — fog that lingers in
+  the morning in winter, shade at low sun that the base does not model — get their own
+  value; hours with little energy stay close to the day factor. On the reference data this
+  lowered the rest-of-day error by a further 11 % (summer) to 17 % (autumn) and the
+  day-ahead error by 7–16 %, with every checkpoint better.
 
 ### Fog layer (shadow by default)
 
@@ -129,6 +136,7 @@ integration). Several entries are possible, e.g. one per base forecast.
 | Section | Option | Default | Meaning |
 |---|---|---|---|
 | Level factor | Apply | on | Off: computed and shown, not applied. |
+| | Factor by time of day | on | One factor per clock hour instead of one per day. |
 | | Days learned from | 14 | Complete past days in the ratio. |
 | | Start-up weight | 2 days | Days at ratio 1.0 added to the ratio. |
 | | Lowest / highest factor | 0.3 / 1.5 | Limits of the factor. |
@@ -153,7 +161,7 @@ like — the integration does not depend on them.
 | `sensor.pv_forecast_correction_today` | corrected day total (kWh) | `estimate`, `estimate10`, `estimate90`, `detailedForecast`, `detailedHourly`, `actual_so_far`, `base_estimate*`, `level_factor`, `fog_factor` |
 | `sensor.pv_forecast_correction_remaining_today` | corrected rest of today (kWh) | `estimate`, `estimate10`, `estimate90`, `detailedForecast` (rest only), `base_estimate*` |
 | `sensor.pv_forecast_correction_tomorrow` | corrected total tomorrow (kWh) | as *today*, without `actual_so_far` |
-| `sensor.pv_forecast_correction_level_factor` | f | `status`, `days_used`, `sum_actual`, `sum_forecast`, `raw_ratio`, `shrink_weight`, `daily_ratios`, `computed_at` |
+| `sensor.pv_forecast_correction_level_factor` | f (day factor) | `status`, `days_used`, `curve` (factor per hour), `sum_actual`, `sum_forecast`, `raw_ratio`, `shrink_weight`, `daily_ratios`, `imported_days`, `computed_at` |
 | `sensor.pv_forecast_correction_fog_factor` | k applied (1 when inactive) | `mode`, `reason`, `gate`, `k_shadow`, `k_morning`, `k_recent`, `base_confidence`, `active_since` |
 | `sensor.pv_forecast_correction_error_base` | yesterday's rest-of-day MAE of the base (kWh) | `rest_of_day` per time, `day_error`, `day_ahead_error`, `day_p10_held`, `day_p90_held`, `status` |
 | `sensor.pv_forecast_correction_error_corrected` | the same for the corrected forecast | as above, plus `shadow_*` while the fog layer is in shadow mode |
@@ -234,6 +242,8 @@ skips days with gaps, and keeps days the integration measured itself. The day to
 start of production stands in for the forecast of record, which recorders do not keep; on
 real data the resulting factor differed from the exact value by about 1 %. Imported days are
 listed in the `imported_days` attribute of the level factor and age out like any other day.
+They teach the day factor only: recorders do not keep the forecast per hour, so the
+time-of-day curve learns from the days the integration measures itself.
 
 ## Troubleshooting
 
