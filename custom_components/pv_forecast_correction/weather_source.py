@@ -22,6 +22,8 @@ from .core.weather import (
 _LOGGER = logging.getLogger(__name__)
 TIMEOUT = aiohttp.ClientTimeout(total=60)
 _CATALOGUE = f"{DOMAIN}_stations"
+MIN_STATIONS = 1000
+"""The catalogue lists about 5,600 stations; far fewer means a broken download."""
 
 
 @dataclass(slots=True)
@@ -42,10 +44,13 @@ async def _download(
                 return 304, b"", response.headers.get("Last-Modified")
             if response.status != 200:
                 raise WeatherError(f"HTTP {response.status} from {url}")
-            content = await response.content.read(MAX_DOWNLOAD_BYTES + 1)
-            if len(content) > MAX_DOWNLOAD_BYTES:
-                raise WeatherError(f"download from {url} is too large")
-            return 200, content, response.headers.get("Last-Modified")
+            # Read to the end: a single read returns only what has arrived so far.
+            content = bytearray()
+            async for chunk in response.content.iter_chunked(65536):
+                content.extend(chunk)
+                if len(content) > MAX_DOWNLOAD_BYTES:
+                    raise WeatherError(f"download from {url} is too large")
+            return 200, bytes(content), response.headers.get("Last-Modified")
     except (aiohttp.ClientError, TimeoutError) as err:
         raise WeatherError(f"{url}: {err}") from err
 
@@ -69,8 +74,8 @@ async def async_stations(hass: HomeAssistant) -> list[Station]:
         return cached
     _, content, _ = await _download(hass, STATION_CATALOGUE_URL, {})
     stations = parse_stations(content.decode("latin-1"))
-    if not stations:
-        raise WeatherError("the DWD station catalogue is empty")
+    if len(stations) < MIN_STATIONS:
+        raise WeatherError(f"the DWD station catalogue is incomplete ({len(stations)} stations)")
     hass.data[_CATALOGUE] = stations
     return stations
 

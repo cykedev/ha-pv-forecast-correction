@@ -31,7 +31,8 @@ STATION = "X1234"
 CATALOGUE = (
     "ID    ICAO NAME                 LAT    LON     ELEV\n"
     "----- ---- -------------------- -----  ------- -----\n"
-    "X1234 ---- TESTSTADT             32.52 -117.13    50\n"
+    + "".join(f"{20000 + n:05d} ---- FILLER {n:<13} 60.00   10.00   100\n" for n in range(1200))
+    + "X1234 ---- TESTSTADT             32.52 -117.13    50\n"
 )
 
 
@@ -156,3 +157,46 @@ async def test_a_failing_weather_source_leaves_the_correction_running(
         "unknown",
         "unavailable",
     )
+
+
+async def test_downloads_are_read_to_the_end(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A response that arrives in small pieces is read completely (the station catalogue
+    was cut after its first piece, so a station 750 km away looked nearest)."""
+    from custom_components.pv_forecast_correction import weather_source
+
+    lines = [
+        f"{10000 + n:05d} ---- STATION {n:<12} {40 + n % 20}.00  {n % 30}.00   100"
+        for n in range(1500)
+    ]
+    lines.append("N2076 ---- SAUERLACH             47.59   11.39   615")
+    body = ("ID    ICAO NAME                 LAT    LON     ELEV\n" + "\n".join(lines)).encode()
+
+    class Content:
+        async def iter_chunked(self, size):
+            for start in range(0, len(body), 1000):
+                yield body[start : start + 1000]
+
+    class Response:
+        status = 200
+        content = Content()
+
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    class Session:
+        def get(self, *args, **kwargs):
+            return Response()
+
+    monkeypatch.setattr(weather_source, "async_get_clientsession", lambda hass: Session())
+    hass.config.latitude, hass.config.longitude = 47.98, 11.65
+    station = await weather_source.async_nearest_station(hass)
+    assert station.id == "N2076"
+    assert station.distance_km < 1
