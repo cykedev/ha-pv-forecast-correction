@@ -173,9 +173,12 @@ class Corrector:
             self.base_failures_today += 1
         self.base_valid = False
 
-    def observe_energy(self, now: datetime, kwh: float | None) -> None:
-        """Reading of a cumulative energy sensor in kWh."""
-        self._energy_meter.observe(now, kwh)
+    def observe_energy(
+        self, when: datetime, kwh: float | None, seen: datetime | None = None
+    ) -> None:
+        """Reading of a cumulative energy sensor in kWh: ``when`` the value last changed,
+        ``seen`` when it was last confirmed (defaults to ``when``)."""
+        self._energy_meter.observe(when, kwh, seen)
 
     def observe_power(self, now: datetime, kw: float | None) -> None:
         """Reading of a power sensor (or the sum of several) in kW."""

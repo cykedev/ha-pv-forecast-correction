@@ -46,15 +46,42 @@ def test_energy_meter_long_gap_keeps_energy_but_not_coverage():
     assert not measured.measured
 
 
-def test_energy_meter_attributes_energy_to_the_reporting_period():
+def test_energy_meter_spreads_a_step_since_the_last_change():
     bins = BinStore()
     meter = EnergyMeter(bins)
     meter.observe(minutes(0), 1.0)
-    meter.observe(minutes(5), 1.0)  # repeated tick without a new report: ignored below
-    meter.observe(minutes(5), 1.0)
-    meter.observe(minutes(15), 1.6)  # the meter reports every 15 minutes
-    assert bins.actual(minutes(5), minutes(15)).energy_kwh == pytest.approx(0.6)
-    assert bins.actual(minutes(0), minutes(5)).energy_kwh == 0.0
+    meter.observe(minutes(5), 1.0)  # the same value repeated: ignored
+    meter.observe(minutes(10), 1.0)
+    meter.observe(minutes(15), 1.6)  # the counter steps every 15 minutes
+    assert bins.actual(minutes(0), minutes(5)).energy_kwh == pytest.approx(0.2)
+    assert bins.actual(minutes(0), minutes(15)).energy_kwh == pytest.approx(0.6)
+    assert bins.actual(minutes(0), minutes(15)).coverage == pytest.approx(1.0)
+
+
+def test_a_confirmed_standstill_is_measured_zero():
+    bins = BinStore()
+    meter = EnergyMeter(bins)
+    meter.observe(minutes(0), 5.0)
+    for minute in range(5, 181, 5):  # the update tick confirms the unchanged counter
+        meter.observe(minutes(0), 5.0, seen=minutes(minute))
+    meter.observe(minutes(190), 5.1, seen=minutes(190))
+    night = bins.actual(minutes(0), minutes(160))
+    assert night.energy_kwh == 0.0
+    assert night.coverage == pytest.approx(1.0)
+    morning = bins.actual(minutes(160), minutes(190))
+    assert morning.energy_kwh == pytest.approx(0.1)
+    assert morning.coverage == pytest.approx(1.0)
+
+
+def test_unwatched_time_is_a_gap():
+    bins = BinStore()
+    meter = EnergyMeter(bins, max_gap=timedelta(minutes=20))
+    meter.observe(minutes(0), 5.0)
+    meter.observe(minutes(180), 5.3)
+    measured = bins.actual(minutes(0), minutes(180))
+    assert measured.energy_kwh == pytest.approx(0.3)
+    assert measured.coverage == 0.0
+    assert measured.known == pytest.approx(1.0)
 
 
 def test_energy_meter_skips_unavailable_readings():
@@ -166,3 +193,11 @@ def test_energy_from_a_long_gap_is_known_but_not_covered():
     assert measured.known == pytest.approx(1.0)
     restored = BinStore.from_dict(bins.to_dict())
     assert restored.actual(minutes(0), minutes(180)) == measured
+
+
+def test_energy_meter_restores_state_saved_by_earlier_versions():
+    bins = BinStore()
+    meter = EnergyMeter(bins)
+    meter.restore({"time": minutes(0).isoformat(), "value": 5.0})
+    meter.observe(minutes(10), 5.5)
+    assert bins.actual(minutes(0), minutes(10)).energy_kwh == pytest.approx(0.5)

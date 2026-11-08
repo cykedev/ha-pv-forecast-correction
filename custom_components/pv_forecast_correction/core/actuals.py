@@ -156,11 +156,14 @@ class BinStore:
 class EnergyMeter:
     """Turns readings of a cumulative energy sensor (kWh) into bin energy.
 
-    Feed each reading with the time it was reported. The energy between two readings is
-    spread evenly over the time between them, so nothing is lost across gaps; gaps longer
-    than ``max_gap`` (e.g. Home Assistant was down) are marked as gaps, not as covered.
-    Meters with a coarse resolution report rarely in weak light, hence the generous
-    default.
+    Each reading carries two times: ``when`` the value took effect (its last change) and
+    ``seen`` when it was last confirmed (an update tick). Confirming an unchanged value
+    covers the time since the previous confirmation with zero energy: the counter stood
+    still, so nothing was produced (night, end of the day). A change spreads its energy over
+    the time since the previous change, at most the last ``max_step``: counters step every
+    few minutes, and after a standstill the energy belongs to the latest minutes. Time that
+    was not watched for longer than ``max_gap`` (Home Assistant was down, the sensor was
+    unavailable) is marked as a gap: its energy is known in total but not where it fell.
 
     A drop to less than ``reset_share`` of the previous reading is a counter reset (a
     daily counter at midnight); the new reading is then the energy since the reset. A
@@ -173,51 +176,85 @@ class EnergyMeter:
         self,
         bins: BinStore,
         *,
-        max_gap: timedelta = timedelta(hours=2),
+        max_gap: timedelta = timedelta(minutes=20),
+        max_step: timedelta = timedelta(minutes=30),
         reset_share: float = 0.1,
         max_power_kw: float | None = None,
     ) -> None:
         self._bins = bins
         self._max_gap = max_gap
+        self._max_step = max_step
         self._reset_share = reset_share
         self.max_power_kw = max_power_kw
         self.rejected = 0
-        self._last: tuple[datetime, float] | None = None
+        self._value: float | None = None
+        self._changed: datetime | None = None
+        self._seen: datetime | None = None
 
-    def observe(self, when: datetime, value: float | None) -> None:
+    def _confirm(self, start: datetime, end: datetime) -> None:
+        """The counter did not move between ``start`` and ``end``."""
+        if end > start:
+            self._bins.add_energy(start, end, 0.0, covered=end - start <= self._max_gap)
+
+    def observe(self, when: datetime, value: float | None, seen: datetime | None = None) -> None:
         """Feed a reading; ``None`` (unavailable) is skipped, the next reading bridges it."""
         if value is None:
             return
         when = as_utc(when)
-        if self._last is None:
-            self._last = (when, value)
+        seen = max(when, as_utc(seen)) if seen is not None else when
+        if self._value is None or self._changed is None or self._seen is None:
+            self._value, self._changed, self._seen = value, when, seen
             return
-        last_time, last_value = self._last
-        if when <= last_time:
+        if seen <= self._seen and value == self._value:
             return
-        delta = value - last_value
+        if value == self._value:
+            self._confirm(self._seen, seen)
+            self._seen = seen
+            return
+
+        when = min(max(when, self._changed), seen)
+        delta = value - self._value
         baseline = value
         if delta < 0:
-            if value <= self._reset_share * last_value:
+            if value <= self._reset_share * self._value:
                 delta = max(value, 0.0)
-            else:
-                delta, baseline = 0.0, last_value
-        hours = (when - last_time).total_seconds() / 3600
-        if self.max_power_kw is not None and delta > self.max_power_kw * hours:
+            else:  # correction or jitter: keep the higher baseline, nothing produced
+                self._confirm(self._seen, seen)
+                self._seen = max(self._seen, seen)
+                return
+        elapsed = (when - self._changed).total_seconds() / 3600
+        if self.max_power_kw is not None and delta > self.max_power_kw * max(elapsed, 1 / 60):
             self.rejected += 1
-            self._last = (when, value)
+            self._value, self._changed, self._seen = value, when, max(self._seen, seen)
             return
-        self._bins.add_energy(last_time, when, delta, covered=when - last_time <= self._max_gap)
-        self._last = (when, baseline)
+
+        if when - self._seen > self._max_gap:
+            # Not watched in between: the energy fell somewhere since the last confirmation.
+            self._bins.add_energy(self._seen, when, delta, covered=False)
+        else:
+            start = max(self._changed, when - self._max_step)
+            self._confirm(self._seen, start)
+            self._bins.add_energy(start, when, delta, covered=True)
+        self._confirm(when, seen)
+        self._value, self._changed, self._seen = baseline, when, max(self._seen, seen)
 
     def to_dict(self) -> dict[str, Any]:
-        if self._last is None:
+        if self._value is None or self._changed is None or self._seen is None:
             return {}
-        return {"time": self._last[0].isoformat(), "value": self._last[1]}
+        return {
+            "value": self._value,
+            "changed": self._changed.isoformat(),
+            "seen": self._seen.isoformat(),
+        }
 
     def restore(self, data: dict[str, Any]) -> None:
-        if data.get("time") is not None:
-            self._last = (as_utc(datetime.fromisoformat(data["time"])), float(data["value"]))
+        if data.get("changed") is not None:
+            self._value = float(data["value"])
+            self._changed = as_utc(datetime.fromisoformat(data["changed"]))
+            self._seen = as_utc(datetime.fromisoformat(data["seen"]))
+        elif data.get("time") is not None:  # state saved by 0.1.0
+            self._value = float(data["value"])
+            self._changed = self._seen = as_utc(datetime.fromisoformat(data["time"]))
 
 
 class PowerMeter:

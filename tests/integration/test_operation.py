@@ -161,3 +161,41 @@ async def test_services_reject_unknown_entries(hass: HomeAssistant, config_entry
         await hass.services.async_call(
             DOMAIN, "reset", {"config_entry_id": "unknown"}, blocking=True
         )
+
+
+@pytest.mark.usefixtures("berlin")
+async def test_a_counter_stepping_every_15_minutes_keeps_days_complete(
+    hass: HomeAssistant, config_entry: MockConfigEntry, freezer: FrozenDateTimeFactory
+) -> None:
+    """Like many inverter counters: a new value every 15 minutes, none after sunset."""
+    freezer.move_to(local(FIRST, 0, 1))
+    set_forecasts(hass, FIRST)
+    hass.states.async_set(ENERGY_ENTITY, "0.0", {"unit_of_measurement": "kWh"})
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    now = local(FIRST, 0, 1)
+    end = local(FIRST + timedelta(days=1), 0, 10)
+    value = "0.0"
+    while now < end:
+        now += timedelta(minutes=1)
+        freezer.move_to(now)
+        local_now = now.astimezone(end.tzinfo)
+        if local_now.hour == 0 and local_now.minute == 0:
+            set_forecasts(hass, local_now.date())
+        if local_now.minute in (2, 17, 32, 47):
+            # The counter reports the energy up to the quarter hour, two minutes late.
+            quarter = local_now - timedelta(minutes=2)
+            new = f"{produced_until(quarter):.3f}" if quarter.date() == FIRST else "0.000"
+            if new != value:
+                value = new
+                hass.states.async_set(ENERGY_ENTITY, value, {"unit_of_measurement": "kWh"})
+        if local_now.minute % 5 == 0:
+            async_fire_time_changed(hass, now + timedelta(seconds=5))
+        await hass.async_block_till_done()
+
+    stats = config_entry.runtime_data.engine.history[FIRST]
+    assert stats.complete
+    assert stats.missing == 0
+    assert stats.actual_kwh == pytest.approx(RATIO * stats.forecast_kwh, rel=0.02)

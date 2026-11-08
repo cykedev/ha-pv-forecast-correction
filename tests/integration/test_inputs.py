@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, timedelta
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
@@ -190,3 +190,45 @@ async def test_changing_the_production_sensor_does_not_book_its_counter(
     await step(hass, freezer, 10)
     today = hass.states.get("sensor.pv_forecast_correction_today")
     assert today.attributes["actual_so_far"] < 1.0
+
+
+@pytest.mark.usefixtures("berlin")
+async def test_repeated_meter_reports_do_not_squeeze_the_energy(
+    hass: HomeAssistant, config_entry: MockConfigEntry, freezer: FrozenDateTimeFactory
+) -> None:
+    energy_entity = "sensor.pv_energy_today"
+    start = local(DAY, 10, 0) + timedelta(seconds=5)
+    freezer.move_to(start)
+    set_forecasts(hass, DAY)
+    hass.states.async_set(energy_entity, "1.0", {"unit_of_measurement": "kWh"})
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    await step(hass, freezer, 10)
+    # The meter repeats its value (a poll without a new reading) ...
+    hass.states.async_set(energy_entity, "1.0", {"unit_of_measurement": "kWh"}, force_update=True)
+    await step(hass, freezer, 5)
+    # ... and only then steps by 0.6 kWh for the last 15 minutes.
+    hass.states.async_set(energy_entity, "1.6", {"unit_of_measurement": "kWh"})
+    await hass.async_block_till_done()
+    engine = config_entry.runtime_data.engine
+    first = engine.bins.actual(start, start + timedelta(minutes=5)).energy_kwh
+    last = engine.bins.actual(start + timedelta(minutes=10), start + timedelta(minutes=15))
+    assert first == pytest.approx(0.2, abs=0.01)
+    assert last.energy_kwh == pytest.approx(0.2, abs=0.01)
+
+
+@pytest.mark.usefixtures("berlin")
+async def test_base_age_is_when_the_forecast_arrived(
+    hass: HomeAssistant, config_entry: MockConfigEntry, freezer: FrozenDateTimeFactory
+) -> None:
+    arrived = local(DAY, 9, 33)
+    freezer.move_to(arrived)
+    set_forecasts(hass, DAY)
+    freezer.move_to(local(DAY, 12, 44))
+    hass.states.async_set("sensor.pv_energy_today", "3.0", {"unit_of_measurement": "kWh"})
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    age = hass.states.get("sensor.pv_forecast_correction_base_age")
+    assert age.state == arrived.astimezone(UTC).isoformat()

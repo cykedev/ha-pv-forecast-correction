@@ -245,16 +245,17 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
         if self.inputs.curtailment:
             self._read_curtailment(now)
 
-    def _parse(self, entity_id: str) -> tuple[Forecast | None, str | None]:
+    def _parse(self, entity_id: str) -> tuple[Forecast | None, datetime | None, str | None]:
+        """The forecast of an entity, when Home Assistant received it, and a problem."""
         state = self.hass.states.get(entity_id)
         if state is None:
-            return None, f"{entity_id} does not exist"
+            return None, None, f"{entity_id} does not exist"
         if state.state in _INVALID_STATES:
-            return None, f"{entity_id} is {state.state}"
+            return None, None, f"{entity_id} is {state.state}"
         try:
-            return parse_forecast(state.attributes), None
+            return parse_forecast(state.attributes), state.last_updated, None
         except ForecastFormatError as err:
-            return None, f"{entity_id}: {err}"
+            return None, None, f"{entity_id}: {err}"
 
     def _meter_source(self) -> str:
         if self.inputs.actual_energy:
@@ -262,7 +263,7 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
         return "power:" + ",".join(sorted(self.inputs.actual_power))
 
     def _read_base(self, now: datetime) -> None:
-        today, problem = self._parse(self.inputs.forecast_today)
+        today, received, problem = self._parse(self.inputs.forecast_today)
         if today is None and not self.hass.is_running:
             # The base integration may not be loaded yet; it is read again once Home
             # Assistant has started. Keep the restored forecast meanwhile.
@@ -273,17 +274,23 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
             return
         forecast = today
         if self.inputs.forecast_tomorrow:
-            tomorrow, tomorrow_problem = self._parse(self.inputs.forecast_tomorrow)
+            tomorrow, received_tomorrow, tomorrow_problem = self._parse(
+                self.inputs.forecast_tomorrow
+            )
             if tomorrow is not None:
                 forecast = today.merged_with(tomorrow)
+                received = max(filter(None, (received, received_tomorrow)), default=None)
             else:
                 _LOGGER.debug("Tomorrow's forecast not used: %s", tomorrow_problem)
-        update = self.engine.set_base(forecast, now)
+        # The time Home Assistant received the forecast, not the time it was read here: right
+        # after a restart or installation this is when the base integration last delivered.
+        received = now if received is None else min(received, now)
+        update = self.engine.set_base(forecast, received)
         if update.changed and self.archive is not None:
             self._archive_job(
                 "snapshot",
                 self.archive.add_snapshot,
-                now,
+                received,
                 self.engine.base,
                 refreshed=update.refreshed,
             )
@@ -291,7 +298,7 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
     def _number(
         self, entity_id: str
     ) -> tuple[float | None, str | None, datetime | None, str | None]:
-        """Numeric state, its unit, when it was last reported and a problem description."""
+        """Numeric state, its unit, when the value last changed and a problem description."""
         state = self.hass.states.get(entity_id)
         if state is None:
             return None, None, None, f"{entity_id} does not exist"
@@ -301,7 +308,7 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
             value = float(state.state)
         except ValueError:
             return None, None, None, f"{entity_id} is not numeric ({state.state!r})"
-        return value, state.attributes.get("unit_of_measurement"), state.last_reported, None
+        return value, state.attributes.get("unit_of_measurement"), state.last_changed, None
 
     def _warn_unit(self, entity_id: str, unit: str | None, assumed: str) -> None:
         if entity_id not in self._units_warned:
@@ -323,17 +330,18 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
     def _read_actual(self, now: datetime) -> None:
         problem = None
         if self.inputs.actual_energy:
-            # A meter reading is the energy at the time it was reported, not at ``now``:
-            # meters that report every few minutes must not be shifted to the update tick.
+            # A meter value took effect when it changed; reading it again now confirms that the
+            # counter has not moved since (no production), which keeps quiet evenings and
+            # nights measured instead of turning them into gaps.
             entity_id = self.inputs.actual_energy
-            value, unit, reported, problem = self._number(entity_id)
+            value, unit, changed, problem = self._number(entity_id)
             kwh = None if value is None else self._to_kwh(entity_id, value, unit)
-            self.engine.observe_energy(reported or now, kwh)
+            self.engine.observe_energy(changed or now, kwh, seen=now)
         else:
             # Power holds until it changes, so the sum of the current values is valid now.
             total: float | None = 0.0
             for entity_id in self.inputs.actual_power:
-                value, unit, _reported, problem = self._number(entity_id)
+                value, unit, _changed, problem = self._number(entity_id)
                 if value is None:
                     total = None
                     break
