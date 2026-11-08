@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from pathlib import Path
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
@@ -18,17 +19,24 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 from custom_components.pv_forecast_correction.const import DOMAIN
 from custom_components.pv_forecast_correction.core.timeline import day_bounds
 
-from .conftest import ENERGY_ENTITY, TODAY_ENTITY, TZ, local, set_forecasts
+from .conftest import (
+    ENERGY_ENTITY,
+    TODAY_ENTITY,
+    TZ,
+    local,
+    set_forecasts,
+    use_temporary_config_dir,
+)
 
 FIRST = date(2026, 11, 2)
 
 
 @pytest.fixture(autouse=True)
 def auto_enable_custom_integrations(
-    recorder_mock: Recorder, enable_custom_integrations: None
+    recorder_mock: Recorder, enable_custom_integrations: None, hass: HomeAssistant, tmp_path: Path
 ) -> None:
     """The recorder has to start before Home Assistant in these tests."""
-    return
+    use_temporary_config_dir(hass, tmp_path)
 
 
 def _meta(entity_id: str, *, has_sum: bool) -> dict:

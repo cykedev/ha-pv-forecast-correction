@@ -27,7 +27,9 @@
       "invalid_forecast": "This entity has no forecast list in the Solcast format (detailedForecast or detailedHourly with period_start and pv_estimate).",
       "same_forecast": "Today and tomorrow must be different entities.",
       "actual_missing": "Select an energy meter or at least one power sensor for the production.",
-      "actual_both": "Select either an energy meter or power sensors, not both."
+      "actual_both": "Select either an energy meter or power sensors, not both.",
+      "duplicate_input": "Each entity can only be used for one input.",
+      "own_sensor": "The sensors of this integration cannot be used as its inputs."
     },
     "abort": {
       "already_configured": "This forecast is already corrected by another entry."
@@ -116,7 +118,10 @@
       "same_forecast": "Today and tomorrow must be different entities.",
       "actual_missing": "Select an energy meter or at least one power sensor for the production.",
       "actual_both": "Select either an energy meter or power sensors, not both.",
-      "level_bounds": "The lowest level factor must be below the highest."
+      "level_bounds": "The lowest level factor must be below the highest.",
+      "duplicate_input": "Each entity can only be used for one input.",
+      "own_sensor": "The sensors of this integration cannot be used as its inputs.",
+      "already_used": "Another entry already corrects this forecast."
     }
   },
   "selector": {
@@ -476,6 +481,9 @@
     },
     "recorder_unavailable": {
       "message": "The recorder is not available, so there is no history to learn from."
+    },
+    "archive_failed": {
+      "message": "The archive could not be used: {error}"
     }
   },
   "issues": {

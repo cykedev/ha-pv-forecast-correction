@@ -44,6 +44,8 @@ SAVE_DELAY_SECONDS: Final = 60
 UPDATE_MINUTES: Final = tuple(range(0, 60, 5))
 UPDATE_SECOND: Final = 5
 ARCHIVE_EVERY_MINUTES: Final = 15
+FORECAST_SETTLE_SECONDS: Final = 2
+"""Today's and tomorrow's forecast change one after the other; read them together."""
 WARN_AFTER_MINUTES: Final = 10
 ISSUE_AFTER_MINUTES: Final = 60
 

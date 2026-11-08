@@ -21,6 +21,7 @@ from .conftest import (
     forecast_attributes,
     local,
     set_forecasts,
+    settle,
 )
 
 DAY = date(2026, 6, 1)
@@ -106,7 +107,7 @@ async def test_unavailable_base_keeps_the_last_forecast(
     before = hass.states.get("sensor.pv_forecast_correction_tomorrow").state
 
     hass.states.async_set(TODAY_ENTITY, STATE_UNAVAILABLE, {})
-    await hass.async_block_till_done()
+    await settle(hass)
 
     assert hass.states.get("sensor.pv_forecast_correction_tomorrow").state == before
     age = hass.states.get("sensor.pv_forecast_correction_base_age")

@@ -21,9 +21,10 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, tzinfo
 from enum import StrEnum
 
-from .timeline import as_utc, day_bounds, steps
+from .timeline import as_utc, day_bounds, floor_to, steps
 
 HOUR = timedelta(hours=1)
+HALF_HOUR = HOUR / 2
 MIN_HOURLY_KWH = 0.001
 """An hour with at least this much energy counts as producing ..."""
 MIN_PEAK_SHARE = 0.01
@@ -67,6 +68,9 @@ def days_from_hourly(
 ) -> list[HistoryDay]:
     """Day sums from hourly series keyed by the hour's start (UTC).
 
+    Recorder statistics are kept per full UTC hour; in time zones with a half-hour offset
+    an hour belongs to the local day that contains its middle.
+
     ``energy`` is the energy measured in each hour (kWh). ``forecast`` is the base
     forecast's total for the day as it stood at the end of each hour (kWh).
     ``hourly_forecast`` is the forecast of record per hour (kWh), when known; a day it
@@ -92,7 +96,7 @@ def _day(
     tz: tzinfo,
 ) -> HistoryDay:
     start, end = day_bounds(day, tz)
-    hours = list(steps(start, end, HOUR))
+    hours = [h for h in steps(floor_to(start, HOUR), end, HOUR) if start <= h + HALF_HOUR < end]
     peak = max((energy.get(hour, 0.0) for hour in hours), default=0.0)
     threshold = max(MIN_HOURLY_KWH, MIN_PEAK_SHARE * peak)
     producing = [hour for hour in hours if energy.get(hour, 0.0) >= threshold]
@@ -105,7 +109,7 @@ def _day(
 
     if all(hour in hourly for hour in steps(first, last + HOUR, HOUR)):
         per_hour = tuple(
-            (hour.astimezone(tz).hour, max(energy.get(hour, 0.0), 0.0), hourly[hour])
+            ((hour + HALF_HOUR).astimezone(tz).hour, max(energy.get(hour, 0.0), 0.0), hourly[hour])
             for hour in hours
             if hourly.get(hour, 0.0) > 0
         )
@@ -116,7 +120,7 @@ def _day(
     total = as_of = None
     for back in range(1, FORECAST_LOOKBACK_HOURS + 1):
         hour = first - back * HOUR
-        if hour < start:
+        if hour < hours[0]:
             break
         if forecast.get(hour) is not None:
             total, as_of = forecast[hour], hour + HOUR

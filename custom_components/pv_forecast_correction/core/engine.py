@@ -154,6 +154,11 @@ class Corrector:
         if not forecast:
             self.base_unavailable(now)
             return BaseUpdate(refreshed=False, changed=False)
+        today = local_day(now, self.tz)
+        if self.day is not None and today > self.day:
+            # Close the previous day with the base it had, before the new one replaces it
+            # (after an outage the new base no longer covers the intervals it missed).
+            self._roll_over(today, as_utc(now))
         old = self.base.as_dict()
         new = forecast.as_dict()
         refreshed = not old or any(
@@ -203,6 +208,16 @@ class Corrector:
             )
             self._power_meter = PowerMeter(self.bins)
             self.meter_source = source
+
+    def measured_until(self, now: datetime) -> datetime:
+        """Measurements before this instant are final. An energy counter that steps every
+        few minutes has not yet reported the energy of the minutes since its last step."""
+        horizon = as_utc(now)
+        for meter in (self._energy_meter, self._power_meter):
+            settled = meter.settled_until
+            if settled is not None:
+                horizon = min(horizon, settled)
+        return horizon
 
     @property
     def rejected_readings(self) -> int:
@@ -269,14 +284,15 @@ class Corrector:
         optionally with sums per clock hour ``((hour, measured, forecast), ...)``, for
         example from the recorder's history. Days measured here win unless ``replace``;
         days imported earlier are replaced. Returns the number of days taken over and
-        recomputes the level factor."""
+        recomputes the level factor. A measured day that is incomplete (for example the day of
+        installation) does not block an import of the same day."""
         today = self.day if self.day is not None else local_day(now, self.tz)
         taken = 0
         for day, actual, forecast, *rest in days:
             if day >= today or forecast <= 0 or actual < 0:
                 continue
             existing = self.history.get(day)
-            if existing is not None and not existing.imported and not replace:
+            if existing is not None and not existing.imported and existing.complete and not replace:
                 continue
             hours = tuple(rest[0]) if rest else ()
             self.history[day] = replace_stats(
@@ -366,11 +382,15 @@ class Corrector:
     def _fog_inputs(self, now: datetime) -> FogInputs:
         assert self.day is not None
         start, end = day_bounds(self.day, self.tz)
-        recent_start = now - timedelta(hours=self.settings.fog.recent_hours)
+        horizon = self.measured_until(now)
+        completed = [i for i in steps(start, end, INTERVAL) if i + INTERVAL <= horizon]
+        recent_start = (
+            completed[-1] + INTERVAL - timedelta(hours=self.settings.fog.recent_hours)
+            if completed
+            else horizon
+        )
         expected_morning = actual_morning = expected_recent = actual_recent = 0.0
-        for interval in steps(start, end, INTERVAL):
-            if interval + INTERVAL > now:
-                break
+        for interval in completed:
             point = self.record.get(interval)
             if point is None or point.p50 <= 0:
                 continue
@@ -455,8 +475,9 @@ class Corrector:
             and not self.checkpoints.day_total
             and nominal <= now < nominal + CAPTURE_WINDOW
         ):
-            measured = self.bins.actual(start, nominal).energy_kwh
-            variants = self._variants(today_base, nominal, end, measured)
+            until = max(start, min(nominal, self.measured_until(now)))
+            measured = self.bins.actual(start, until).energy_kwh
+            variants = self._variants(today_base, until, end, measured)
             variants[BASE] = self._base_band(today_base, start, end)
             self.checkpoints.day_total = variants
 
@@ -537,9 +558,19 @@ class Corrector:
             value(forecast.p90),
         )
 
+    def _measured_blend(
+        self, forecast: ForecastPoint, until: datetime, horizon: datetime
+    ) -> ForecastPoint:
+        """Interval with its measurements up to ``until`` (as far as they are final) and
+        the forecast for the rest."""
+        until = max(forecast.start, min(until, horizon))
+        left = (forecast.start + INTERVAL - until) / INTERVAL
+        return self._blend(forecast, self.bins.actual(forecast.start, until), left)
+
     def result(self, now: datetime) -> Result:
         """Corrected forecasts as of ``now`` (call ``update`` first)."""
         now = as_utc(now)
+        horizon = self.measured_until(now)
         day = self.day if self.day is not None else local_day(now, self.tz)
         start, end = day_bounds(day, self.tz)
         today_base = self.base.between(start, end)
@@ -557,9 +588,7 @@ class Corrector:
                 # Past: measured where readings cover the interval, the level-corrected
                 # forecast of record for the uncovered rest.
                 record = self.record.get(point.start, point).scaled(self.level_at(point.start))
-                today_points.append(
-                    self._blend(record, self.bins.actual(point.start, interval_end), 0.0)
-                )
+                today_points.append(self._measured_blend(record, interval_end, horizon))
                 continue
             rest_points.append(corrected)
             left = min(1.0, (interval_end - max(now, point.start)) / INTERVAL)
@@ -570,9 +599,7 @@ class Corrector:
                 None if rest_energy.p90 is None or part.p90 is None else rest_energy.p90 + part.p90,
             )
             if point.start < now:
-                today_points.append(
-                    self._blend(corrected, self.bins.actual(point.start, now), left)
-                )
+                today_points.append(self._measured_blend(corrected, now, horizon))
             else:
                 today_points.append(corrected)
 

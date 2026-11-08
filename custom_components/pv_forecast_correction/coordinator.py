@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import sqlite3
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -22,10 +24,14 @@ from homeassistant.const import (
 from homeassistant.core import CALLBACK_TYPE, Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
-from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_state_change_event,
+    async_track_time_change,
+)
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import EnergyConverter, PowerConverter
 
@@ -35,6 +41,7 @@ from .const import (
     CONF_ARCHIVE_ENABLED,
     CONF_ARCHIVE_RETENTION_DAYS,
     DOMAIN,
+    FORECAST_SETTLE_SECONDS,
     ISSUE_AFTER_MINUTES,
     SAVE_DELAY_SECONDS,
     STORAGE_KEY,
@@ -46,7 +53,7 @@ from .const import (
 from .core import Corrector, Forecast, ForecastFormatError, Result, Settings, parse_forecast
 from .core.archive import Archive, ArchiveError, CorrectionRow, MeasuredBin
 from .core.history import HOUR, days_from_hourly
-from .core.timeline import day_bounds, steps
+from .core.timeline import day_bounds, local_day, steps
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -70,9 +77,19 @@ class _Problem:
         self.since: datetime | None = None
         self.detail: str | None = None
         self._logged = False
+        # An issue raised before a restart or reload stays until the input works again.
+        self._raised = ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+
+    def hold(self) -> None:
+        """The input cannot be judged now (no production expected): a raised issue stays,
+        a problem that has not become one yet starts counting anew next time."""
+        if not self._raised:
+            self.since = None
+
+    def clear(self) -> None:
+        """Remove the issue (the entry is disabled or removed)."""
+        ir.async_delete_issue(self._hass, DOMAIN, self._issue_id)
         self._raised = False
-        # An issue raised before a restart or reload is re-raised if the problem persists.
-        ir.async_delete_issue(hass, DOMAIN, issue_id)
 
     def report(self, now: datetime, detail: str | None, placeholders: dict[str, str]) -> None:
         """Report the current problem (``None`` when everything is fine)."""
@@ -129,6 +146,8 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
         self._units_warned: set[str] = set()
         self._base_problem = _Problem(hass, issue_id("forecast", entry), "forecast_unavailable")
         self._actual_problem = _Problem(hass, issue_id("actual", entry), "actual_unavailable")
+        self._archived_report: Any = None
+        self._pending_base: CALLBACK_TYPE | None = None
 
     @property
     def archive_path(self) -> Path:
@@ -148,13 +167,15 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
                 self.engine = Corrector(self.settings, tz)
         # Readings of a different measurement input must not be continued (spikes).
         self.engine.use_meter_source(self._meter_source())
+        self._archived_report = self.engine.report  # archived before the restart
         now = dt_util.utcnow()
         if self.engine.day == dt_util.as_local(now).date():
             previous = self.engine.level
             self.engine.recompute_level(now)
-            if (self.engine.level.factor, self.engine.level.days) == (
+            if (self.engine.level.factor, self.engine.level.days, self.engine.level.curve) == (
                 previous.factor,
                 previous.days,
+                previous.curve,
             ):
                 self.engine.level = previous  # unchanged: keep the nightly timestamp
 
@@ -168,9 +189,11 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
                 await self.hass.async_add_executor_job(
                     archive.set_meta, "settings", json.dumps(settings_dict(self.settings))
                 )
-            except ArchiveError as err:
+            except (ArchiveError, OSError, sqlite3.Error) as err:
+                # The correction works without its archive.
                 self.archive_error = str(err)
                 _LOGGER.warning("Archive disabled, %s cannot be used: %s", archive.path, err)
+                await self.hass.async_add_executor_job(archive.close)
             else:
                 self.archive = archive
 
@@ -192,22 +215,36 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
                 )
             )
         self._unsubscribe.append(async_at_started(self.hass, self._on_started))
+        now = dt_util.utcnow()
         self._read_inputs(now, base=True)
         self._refresh(now)
 
     async def async_stop(self) -> None:
-        """Unsubscribe, save the state and close the archive."""
+        """Unsubscribe, save the state and close the archive (safe to call twice)."""
         for unsubscribe in self._unsubscribe:
             unsubscribe()
         self._unsubscribe = []
+        if self._pending_base is not None:
+            self._pending_base()
+            self._pending_base = None
         await self._store.async_save(self.engine.to_dict())
         if self.archive is not None:
             await self.hass.async_add_executor_job(self.archive.close)
             self.archive = None
 
-    async def async_remove_data(self) -> None:
-        """Delete the stored state of a removed entry (the archive file is kept)."""
-        await self._store.async_remove()
+    def clear_issues(self) -> None:
+        """Remove the repair issues of this entry."""
+        self._base_problem.clear()
+        self._actual_problem.clear()
+
+    async def _async_update_data(self) -> Result:
+        """A requested refresh (e.g. the update_entity action) runs a full cycle."""
+        now = dt_util.utcnow()
+        self._read_inputs(now, base=True)
+        result = self._cycle(now)
+        if result is None:
+            raise UpdateFailed(self.last_error or "no result")
+        return result
 
     # ------------------------------------------------------------------ events
 
@@ -219,6 +256,15 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
 
     @callback
     def _on_forecast_change(self, event: Event[EventStateChangedData]) -> None:
+        if self._pending_base is not None:
+            self._pending_base()
+        self._pending_base = async_call_later(
+            self.hass, FORECAST_SETTLE_SECONDS, self._on_forecast_settled
+        )
+
+    @callback
+    def _on_forecast_settled(self, _fired_at: datetime) -> None:
+        self._pending_base = None
         now = dt_util.utcnow()
         self._read_base(now)
         self._refresh(now)
@@ -271,11 +317,12 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
             # The base integration may not be loaded yet; it is read again once Home
             # Assistant has started. Keep the restored forecast meanwhile.
             return
-        self._base_problem.report(now, problem, {"entity_id": self.inputs.forecast_today})
         if today is None:
+            self._base_problem.report(now, problem, {"entity_id": self.inputs.forecast_today})
             self.engine.base_unavailable(now)
             return
         forecast = today
+        tomorrow_problem = None
         if self.inputs.forecast_tomorrow:
             tomorrow, received_tomorrow, tomorrow_problem = self._parse(
                 self.inputs.forecast_tomorrow
@@ -284,7 +331,18 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
                 forecast = today.merged_with(tomorrow)
                 received = max(filter(None, (received, received_tomorrow)), default=None)
             else:
-                _LOGGER.debug("Tomorrow's forecast not used: %s", tomorrow_problem)
+                # Keep tomorrow's last forecast rather than dropping it.
+                tz = dt_util.get_default_time_zone()
+                start, end = day_bounds(local_day(now, tz) + timedelta(days=1), tz)
+                kept = self.engine.base.between(start, end)
+                if kept:
+                    forecast = today.merged_with(Forecast.from_points(kept))
+        if tomorrow_problem is not None and self.hass.is_running:
+            self._base_problem.report(
+                now, tomorrow_problem, {"entity_id": str(self.inputs.forecast_tomorrow)}
+            )
+        else:
+            self._base_problem.report(now, None, {"entity_id": self.inputs.forecast_today})
         # The time Home Assistant received the forecast, not the time it was read here: right
         # after a restart or installation this is when the base integration last delivered.
         received = now if received is None else min(received, now)
@@ -310,6 +368,8 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
         try:
             value = float(state.state)
         except ValueError:
+            value = math.nan
+        if not math.isfinite(value):
             return None, None, None, f"{entity_id} is not numeric ({state.state!r})"
         return value, state.attributes.get("unit_of_measurement"), state.last_changed, None
 
@@ -354,8 +414,10 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
         if problem is not None and (
             not self.hass.is_running or not self.engine.expects_production(now)
         ):
-            # Many inverters go unavailable at night; that is no problem worth reporting.
-            problem = None
+            # Many inverters go unavailable at night; that is no problem worth reporting,
+            # but an issue raised during the day stays until the sensor works again.
+            self._actual_problem.hold()
+            return
         self._actual_problem.report(
             now, problem, {"entity_id": ", ".join(self.inputs.actual_entities)}
         )
@@ -371,7 +433,12 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
     # ------------------------------------------------------------------ cycle
 
     def _refresh(self, now: datetime) -> None:
-        previous_report = self.engine.report
+        result = self._cycle(now)
+        if result is not None:
+            self.async_set_updated_data(result)
+
+    def _cycle(self, now: datetime) -> Result | None:
+        """Advance the engine, archive and schedule a save; ``None`` if it failed."""
         try:
             self.engine.update(now)
             result = self.engine.result(now)
@@ -380,17 +447,17 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
             if message != self.last_error:
                 _LOGGER.exception("Correction failed, keeping the last result")
             self.last_error = message
-            return
+            return None
         self.last_error = None
-        self._archive_cycle(now, result, previous_report)
-        self.async_set_updated_data(result)
+        self._archive_cycle(now, result)
         self._store.async_delay_save(self.engine.to_dict, SAVE_DELAY_SECONDS)
+        return result
 
-    def _archive_cycle(self, now: datetime, result: Result, previous_report: Any) -> None:
+    def _archive_cycle(self, now: datetime, result: Result) -> None:
         if self.archive is None:
             return
         bins = [
-            MeasuredBin(start, item.energy_kwh, item.covered_s, item.curtailed)
+            MeasuredBin(start, item.energy_kwh, item.covered_s, item.curtailed, item.gap_s)
             for start, item in self.engine.bins.items()
             if now - timedelta(hours=1) <= start <= now - timedelta(minutes=5)
         ]
@@ -416,9 +483,10 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
                 ),
             )
         report = self.engine.report
-        if report is not None and report is not previous_report:
+        if report is not None and report is not self._archived_report:
+            self._archived_report = report
             all_bins = [
-                MeasuredBin(start, item.energy_kwh, item.covered_s, item.curtailed)
+                MeasuredBin(start, item.energy_kwh, item.covered_s, item.curtailed, item.gap_s)
                 for start, item in self.engine.bins.items()
             ]
             self._archive_job("bins", self.archive.add_bins, all_bins)
@@ -456,7 +524,14 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
         target = Path(
             self.hass.config.path(DOMAIN, "export", f"{self.config_entry.entry_id}-{stamp}")
         )
-        files = await self.hass.async_add_executor_job(self.archive.export_csv, target)
+        try:
+            files = await self.hass.async_add_executor_job(self.archive.export_csv, target)
+        except (ArchiveError, OSError, sqlite3.Error) as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="archive_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
         return [str(path) for path in files]
 
     async def async_learn_from_history(
@@ -485,6 +560,7 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
         last_day = today - timedelta(days=1)
         start, _ = day_bounds(first_day, tz)
         _, end = day_bounds(last_day, tz)
+        start -= HOUR  # statistics are per UTC hour, local days may start at half past
         recorder = get_instance(self.hass)
         forecast_id = self.inputs.forecast_today
         ids = {*self.inputs.actual_entities, forecast_id}
@@ -540,7 +616,7 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
             ((d.day, d.actual_kwh or 0.0, d.forecast_kwh or 0.0, d.hours) for d in usable), now
         )
         await self._store.async_save(self.engine.to_dict())
-        self._refresh(now)
+        self._refresh(dt_util.utcnow())
         learned = self.engine.history
         return {
             "days": [
@@ -571,12 +647,18 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
     async def async_reset(self, *, clear_archive: bool) -> None:
         """Forget what layer A learned (and optionally the archive)."""
         self.engine.reset_learning()
-        now = dt_util.utcnow()
-        self.engine.recompute_level(now)
+        self.engine.recompute_level(dt_util.utcnow())
         if clear_archive and self.archive is not None:
-            await self.hass.async_add_executor_job(self.archive.clear)
+            try:
+                await self.hass.async_add_executor_job(self.archive.clear)
+            except (ArchiveError, OSError, sqlite3.Error) as err:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="archive_failed",
+                    translation_placeholders={"error": str(err)},
+                ) from err
         await self._store.async_save(self.engine.to_dict())
-        self._refresh(now)
+        self._refresh(dt_util.utcnow())
 
 
 def _hourly_state_totals(

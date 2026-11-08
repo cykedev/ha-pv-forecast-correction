@@ -94,3 +94,26 @@ def test_falls_back_to_the_day_total_without_hourly_forecast():
     [result] = days_from_hourly(energy, forecast, TZ, DAY, DAY, hourly_forecast=hourly)
     assert result.forecast_kwh == 20.0
     assert result.hours == ()
+
+
+def test_half_hour_time_zones_use_the_utc_hours_of_the_recorder():
+    """Recorder statistics are per UTC hour; in Adelaide local days start at half past."""
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Adelaide")
+    day = date(2026, 11, 2)
+    start, end = day_bounds(day, tz)
+    hours = [datetime(2026, 11, 1, 12, tzinfo=UTC) + timedelta(hours=h) for h in range(26)]
+    energy = {
+        h: (1.0 if 7 <= (h + timedelta(minutes=30)).astimezone(tz).hour < 16 else 0.0)
+        for h in hours
+    }
+    forecast = dict.fromkeys(hours, 12.0)
+    power = {h: (1.5 if energy[h] else 0.0) for h in hours}
+    [result] = days_from_hourly(energy, forecast, tz, day, day, hourly_forecast=power)
+    assert result.usable
+    assert result.actual_kwh == pytest.approx(9.0)
+    assert result.forecast_kwh == pytest.approx(13.5)
+    assert [h for h, _, _ in result.hours] == list(range(7, 16))
+    assert all(start <= h + timedelta(minutes=30) < end for h in hours if energy[h])

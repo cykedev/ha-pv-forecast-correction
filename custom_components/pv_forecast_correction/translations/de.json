@@ -27,7 +27,9 @@
       "invalid_forecast": "Diese Entität hat keine Prognoseliste im Solcast-Format (detailedForecast oder detailedHourly mit period_start und pv_estimate).",
       "same_forecast": "Heute und morgen müssen verschiedene Entitäten sein.",
       "actual_missing": "Wähle für die Erzeugung einen Energiezähler oder mindestens einen Leistungssensor.",
-      "actual_both": "Wähle entweder einen Energiezähler oder Leistungssensoren, nicht beides."
+      "actual_both": "Wähle entweder einen Energiezähler oder Leistungssensoren, nicht beides.",
+      "duplicate_input": "Jede Entität kann nur für einen Eingang verwendet werden.",
+      "own_sensor": "Die Sensoren dieser Integration können nicht ihre eigenen Eingänge sein."
     },
     "abort": {
       "already_configured": "Diese Prognose wird bereits von einem anderen Eintrag korrigiert."
@@ -116,7 +118,10 @@
       "same_forecast": "Heute und morgen müssen verschiedene Entitäten sein.",
       "actual_missing": "Wähle für die Erzeugung einen Energiezähler oder mindestens einen Leistungssensor.",
       "actual_both": "Wähle entweder einen Energiezähler oder Leistungssensoren, nicht beides.",
-      "level_bounds": "Der kleinste Niveau-Faktor muss unter dem größten liegen."
+      "level_bounds": "Der kleinste Niveau-Faktor muss unter dem größten liegen.",
+      "duplicate_input": "Jede Entität kann nur für einen Eingang verwendet werden.",
+      "own_sensor": "Die Sensoren dieser Integration können nicht ihre eigenen Eingänge sein.",
+      "already_used": "Ein anderer Eintrag korrigiert diese Prognose bereits."
     }
   },
   "selector": {
@@ -476,6 +481,9 @@
     },
     "recorder_unavailable": {
       "message": "Die Aufzeichnung (Recorder) ist nicht verfügbar, es gibt keinen Verlauf zum Lernen."
+    },
+    "archive_failed": {
+      "message": "Das Archiv konnte nicht verwendet werden: {error}"
     }
   },
   "issues": {

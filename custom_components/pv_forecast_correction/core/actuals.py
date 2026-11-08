@@ -165,10 +165,15 @@ class EnergyMeter:
     was not watched for longer than ``max_gap`` (Home Assistant was down, the sensor was
     unavailable) is marked as a gap: its energy is known in total but not where it fell.
 
+    Until a standstill has lasted longer than ``max_step``, the next step may still spread
+    energy over it, so bins after ``settled_until`` are provisional: they read as zero but
+    the counter may not have caught up yet.
+
     A drop to less than ``reset_share`` of the previous reading is a counter reset (a
-    daily counter at midnight); the new reading is then the energy since the reset. A
-    smaller drop is a correction or jitter: it adds nothing and the higher reading stays
-    the baseline. A rise that would mean more than ``max_power_kw`` on average (a glitch
+    daily counter at midnight, the same rule Home Assistant uses for ``total_increasing``);
+    the new reading is then the energy since the reset. A smaller drop is a correction or
+    jitter: it adds nothing and the higher reading stays the baseline. A rise that would
+    mean more than ``max_power_kw`` on average over the time it is spread across (a glitch
     such as a lifetime meter briefly reading 0) is rejected and counted in ``rejected``.
     """
 
@@ -178,7 +183,7 @@ class EnergyMeter:
         *,
         max_gap: timedelta = timedelta(minutes=20),
         max_step: timedelta = timedelta(minutes=30),
-        reset_share: float = 0.1,
+        reset_share: float = 0.9,
         max_power_kw: float | None = None,
     ) -> None:
         self._bins = bins
@@ -190,6 +195,15 @@ class EnergyMeter:
         self._value: float | None = None
         self._changed: datetime | None = None
         self._seen: datetime | None = None
+        self._resumed: datetime | None = None
+        """Watching resumed here after a gap; covered spreads do not reach back past it."""
+
+    @property
+    def settled_until(self) -> datetime | None:
+        """Bins before this instant are final; later ones may still change."""
+        if self._changed is None or self._seen is None:
+            return None
+        return max(self._changed, self._seen - self._max_step)
 
     def _confirm(self, start: datetime, end: datetime) -> None:
         """The counter did not move between ``start`` and ``end``."""
@@ -208,50 +222,79 @@ class EnergyMeter:
         if seen <= self._seen and value == self._value:
             return
         if value == self._value:
+            self._watch(seen)
             self._confirm(self._seen, seen)
             self._seen = seen
             return
 
         when = min(max(when, self._changed), seen)
         delta = value - self._value
-        baseline = value
+        reset = False
         if delta < 0:
-            if value <= self._reset_share * self._value:
-                delta = max(value, 0.0)
+            if value < self._reset_share * self._value:
+                delta, reset = max(value, 0.0), True
             else:  # correction or jitter: keep the higher baseline, nothing produced
+                self._watch(seen)
                 self._confirm(self._seen, seen)
                 self._seen = max(self._seen, seen)
                 return
-        elapsed = (when - self._changed).total_seconds() / 3600
-        if self.max_power_kw is not None and delta > self.max_power_kw * max(elapsed, 1 / 60):
+
+        unwatched = when - self._seen > self._max_gap
+        if unwatched:
+            # Not watched in between: the energy fell somewhere since the last confirmation.
+            # After a reset it counts from the reset, which a daily counter passes at night,
+            # so it belongs to the latest minutes rather than to the whole gap.
+            start = max(self._seen, when - self._max_step) if reset else self._seen
+        else:
+            start = max(self._changed, when - self._max_step)
+        hours = (when - start).total_seconds() / 3600
+        if self.max_power_kw is not None and delta > self.max_power_kw * max(hours, 1 / 60):
             self.rejected += 1
             self._value, self._changed, self._seen = value, when, max(self._seen, seen)
             return
 
-        if when - self._seen > self._max_gap:
-            # Not watched in between: the energy fell somewhere since the last confirmation.
-            self._bins.add_energy(self._seen, when, delta, covered=False)
+        if unwatched:
+            self._bins.add_energy(self._seen, start, 0.0, covered=False)
+            self._bins.add_energy(start, when, delta, covered=False)
+            self._resumed = when
         else:
-            start = max(self._changed, when - self._max_step)
             self._confirm(self._seen, start)
-            self._bins.add_energy(start, when, delta, covered=True)
+            resumed = self._resumed
+            if resumed is not None and start < resumed < when:
+                # Part of the spread lies in time that was not watched.
+                share = delta * (resumed - start) / (when - start)
+                self._bins.add_energy(start, resumed, share, covered=False)
+                self._bins.add_energy(resumed, when, delta - share, covered=True)
+            else:
+                self._bins.add_energy(start, when, delta, covered=True)
         self._confirm(when, seen)
-        self._value, self._changed, self._seen = baseline, when, max(self._seen, seen)
+        self._value, self._changed, self._seen = value, when, max(self._seen, seen)
+
+    def _watch(self, seen: datetime) -> None:
+        """Note where watching resumes when the time since the last reading was a gap."""
+        assert self._seen is not None
+        if seen - self._seen > self._max_gap:
+            self._resumed = seen
 
     def to_dict(self) -> dict[str, Any]:
         if self._value is None or self._changed is None or self._seen is None:
             return {}
-        return {
+        data: dict[str, Any] = {
             "value": self._value,
             "changed": self._changed.isoformat(),
             "seen": self._seen.isoformat(),
         }
+        if self._resumed is not None:
+            data["resumed"] = self._resumed.isoformat()
+        return data
 
     def restore(self, data: dict[str, Any]) -> None:
         if data.get("changed") is not None:
             self._value = float(data["value"])
             self._changed = as_utc(datetime.fromisoformat(data["changed"]))
             self._seen = as_utc(datetime.fromisoformat(data["seen"]))
+            if data.get("resumed"):
+                self._resumed = as_utc(datetime.fromisoformat(data["resumed"]))
         elif data.get("time") is not None:  # state saved by 0.1.0
             self._value = float(data["value"])
             self._changed = self._seen = as_utc(datetime.fromisoformat(data["time"]))
@@ -268,6 +311,11 @@ class PowerMeter:
         self._bins = bins
         self._max_hold = max_hold
         self._last: tuple[datetime, float | None] | None = None
+
+    @property
+    def settled_until(self) -> datetime | None:
+        """Energy is written up to the latest reading; nothing before it changes."""
+        return None if self._last is None else self._last[0]
 
     def observe(self, when: datetime, value: float | None) -> None:
         """Feed a reading in kW; ``None`` marks the sensor as unavailable from now on.

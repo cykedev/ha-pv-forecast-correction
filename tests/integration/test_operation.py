@@ -17,7 +17,7 @@ from custom_components.pv_forecast_correction.diagnostics import (
     async_get_config_entry_diagnostics,
 )
 
-from .conftest import ENERGY_ENTITY, TODAY_ENTITY, day_points, local, set_forecasts
+from .conftest import ENERGY_ENTITY, TODAY_ENTITY, day_points, local, set_forecasts, settle
 
 FIRST = date(2026, 6, 1)
 RATIO = 0.7
@@ -146,7 +146,7 @@ async def test_a_lasting_base_outage_raises_a_repair_issue(
     assert issue.translation_key == "forecast_unavailable"
 
     set_forecasts(hass, FIRST)
-    await hass.async_block_till_done()
+    await settle(hass)
     assert registry.async_get_issue(DOMAIN, f"forecast_{config_entry.entry_id}") is None
 
 

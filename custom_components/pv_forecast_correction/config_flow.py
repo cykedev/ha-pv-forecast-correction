@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFl
 from homeassistant.const import CONF_NAME, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import section
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.selector import (
     BooleanSelector,
     EntitySelector,
@@ -94,9 +95,39 @@ def _validate_forecast(hass: HomeAssistant, entity_id: str | None) -> str | None
     return None
 
 
-def validate_inputs(hass: HomeAssistant, data: Mapping[str, Any]) -> dict[str, str]:
+def forecast_in_use(hass: HomeAssistant, entity_id: str, entry_id: str | None = None) -> bool:
+    """True when another entry already corrects this forecast."""
+    return any(
+        merged(entry.data, entry.options).get(CONF_FORECAST_TODAY) == entity_id
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if entry.entry_id != entry_id
+    )
+
+
+def validate_inputs(
+    hass: HomeAssistant, data: Mapping[str, Any], entry_id: str | None = None
+) -> dict[str, str]:
     """Errors keyed by field (or ``base``)."""
     errors: dict[str, str] = {}
+    registry = er.async_get(hass)
+    tomorrow = data.get(CONF_FORECAST_TOMORROW)
+    inputs = [
+        data.get(CONF_FORECAST_TODAY),
+        None if tomorrow == data.get(CONF_FORECAST_TODAY) else tomorrow,  # own error below
+        data.get(CONF_ACTUAL_ENERGY),
+        *(data.get(CONF_ACTUAL_POWER) or []),
+        data.get(CONF_CURTAILMENT),
+    ]
+    picked = [entity_id for entity_id in inputs if entity_id]
+    if len(picked) != len(set(picked)):
+        errors["base"] = "duplicate_input"
+    if any(
+        (found := registry.async_get(entity_id)) is not None and found.platform == DOMAIN
+        for entity_id in picked
+    ):
+        errors["base"] = "own_sensor"
+    if entry_id is not None and forecast_in_use(hass, data.get(CONF_FORECAST_TODAY), entry_id):
+        errors[CONF_FORECAST_TODAY] = "already_used"
     for key in (CONF_FORECAST_TODAY, CONF_FORECAST_TOMORROW):
         if error := _validate_forecast(hass, data.get(key)):
             errors[key] = error
@@ -133,11 +164,10 @@ class PvForecastCorrectionConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
+            if forecast_in_use(self.hass, user_input[CONF_FORECAST_TODAY]):
+                return self.async_abort(reason="already_configured")
             errors = validate_inputs(self.hass, user_input)
             if not errors:
-                self._async_abort_entries_match(
-                    {CONF_FORECAST_TODAY: user_input[CONF_FORECAST_TODAY]}
-                )
                 return self.async_create_entry(
                     title=user_input.get(CONF_NAME) or DEFAULT_NAME,
                     data=_clean_inputs(user_input),
@@ -167,7 +197,7 @@ class PvForecastCorrectionOptionsFlow(OptionsFlow):
             flat: dict[str, Any] = {}
             for name in (SECTION_INPUTS, SECTION_LEVEL, SECTION_FOG, SECTION_ARCHIVE):
                 flat.update(user_input.get(name, {}))
-            errors = validate_inputs(self.hass, flat)
+            errors = validate_inputs(self.hass, flat, self.config_entry.entry_id)
             if float(flat[CONF_LEVEL_MIN]) >= float(flat[CONF_LEVEL_MAX]):
                 errors["base"] = "level_bounds"
             if not errors:

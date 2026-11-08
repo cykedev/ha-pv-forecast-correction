@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import Platform
 from homeassistant.core import (
+    Event,
     HomeAssistant,
     ServiceCall,
     ServiceResponse,
     SupportsResponse,
+    callback,
 )
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.entity_registry import EventEntityRegistryUpdatedData
+from homeassistant.helpers.event import async_track_entity_registry_updated_event
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
@@ -22,6 +28,11 @@ from .const import (
     ATTR_CONFIG_ENTRY_ID,
     ATTR_DAYS,
     ATTR_FORECAST_POWER,
+    CONF_ACTUAL_ENERGY,
+    CONF_ACTUAL_POWER,
+    CONF_CURTAILMENT,
+    CONF_FORECAST_TODAY,
+    CONF_FORECAST_TOMORROW,
     CONF_LEVEL_SHRINK_DAYS,
     DOMAIN,
     SERVICE_EXPORT,
@@ -112,19 +123,71 @@ async def async_migrate_entry(hass: HomeAssistant, entry: PvForecastCorrectionCo
 async def async_setup_entry(hass: HomeAssistant, entry: PvForecastCorrectionConfigEntry) -> bool:
     """Start the correction for one config entry."""
     coordinator = CorrectionCoordinator(hass, entry)
-    await coordinator.async_start()
     entry.runtime_data = coordinator
+    # Also runs when the setup fails part-way, so no listener outlives the entry.
+    entry.async_on_unload(coordinator.async_stop)
+    await coordinator.async_start()
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+    entry.async_on_unload(_follow_renamed_inputs(hass, entry))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: PvForecastCorrectionConfigEntry) -> bool:
-    """Stop the correction and save its state."""
+    """Stop the correction; its state is saved when the entry unloads."""
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unloaded:
-        await entry.runtime_data.async_stop()
+    if unloaded and entry.disabled_by is not None:
+        entry.runtime_data.clear_issues()
     return unloaded
+
+
+_INPUT_KEYS = (
+    CONF_FORECAST_TODAY,
+    CONF_FORECAST_TOMORROW,
+    CONF_ACTUAL_ENERGY,
+    CONF_ACTUAL_POWER,
+    CONF_CURTAILMENT,
+)
+
+
+def _renamed(config: Any, old: str, new: str) -> dict[str, Any] | None:
+    """``config`` with every input ``old`` replaced by ``new``; None if nothing changed."""
+    changed = False
+    result = dict(config)
+    for key in _INPUT_KEYS:
+        value = result.get(key)
+        if value == old:
+            result[key], changed = new, True
+        elif isinstance(value, list) and old in value:
+            result[key], changed = [new if item == old else item for item in value], True
+    return result if changed else None
+
+
+@callback
+def _follow_renamed_inputs(hass: HomeAssistant, entry: PvForecastCorrectionConfigEntry):
+    """Keep the inputs when the user renames one of their entities."""
+    inputs = entry.runtime_data.inputs
+    tracked = [*inputs.forecast_entities, *inputs.actual_entities]
+    if inputs.curtailment:
+        tracked.append(inputs.curtailment)
+
+    @callback
+    def renamed(event: Event[EventEntityRegistryUpdatedData]) -> None:
+        data = event.data
+        if data["action"] != "update" or "old_entity_id" not in data:
+            return
+        old, new = data["old_entity_id"], data["entity_id"]
+        new_data = _renamed(entry.data, old, new)
+        new_options = _renamed(entry.options, old, new)
+        if new_data is None and new_options is None:
+            return
+        hass.config_entries.async_update_entry(
+            entry,
+            data=new_data if new_data is not None else entry.data,
+            options=new_options if new_options is not None else entry.options,
+        )
+
+    return async_track_entity_registry_updated_event(hass, tracked, renamed)
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: PvForecastCorrectionConfigEntry) -> None:

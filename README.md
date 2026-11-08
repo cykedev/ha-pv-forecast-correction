@@ -89,7 +89,8 @@ the options once the archive shows that it helps at your site.
 
 - **Today:** intervals that have passed carry the measured production (P10 = P50 = P90),
   the current interval blends what was measured with the corrected forecast, and future
-  intervals carry the corrected forecast. The state is therefore the best estimate of the day
+  intervals carry the corrected forecast. An energy counter that steps every few minutes has
+  not yet reported the minutes since its last step; until it does, they use the forecast. The state is therefore the best estimate of the day
   total: measured so far plus corrected rest.
 - **Remaining today:** the corrected rest of the day, with P10/P90.
 - **Tomorrow:** the base forecast × level factor.
@@ -156,13 +157,14 @@ Entity IDs below are for an entry named *PV Forecast Correction* in an English H
 Assistant whose device has no area. Home Assistant derives the IDs from the translated names
 and the device's area, so in another language or with an area they differ (for example
 `sensor.kitchen_pv_forecast_correction_heute`); rename them in the entity settings if you
-like — the integration does not depend on them.
+like — the integration does not depend on them. Renaming one of its *input* entities is fine
+too: the integration follows the new ID.
 
 | Entity | State | Main attributes |
 |---|---|---|
 | `sensor.pv_forecast_correction_today` | corrected day total (kWh) | `estimate`, `estimate10`, `estimate90`, `detailedForecast`, `detailedHourly`, `actual_so_far`, `base_estimate*`, `level_factor`, `fog_factor` |
 | `sensor.pv_forecast_correction_remaining_today` | corrected rest of today (kWh) | `estimate`, `estimate10`, `estimate90`, `detailedForecast` (rest only), `base_estimate*` |
-| `sensor.pv_forecast_correction_tomorrow` | corrected total tomorrow (kWh) | as *today*, without `actual_so_far` |
+| `sensor.pv_forecast_correction_tomorrow` | corrected total tomorrow (kWh) | as *today*, without `actual_so_far` and `fog_factor` |
 | `sensor.pv_forecast_correction_level_factor` | f (day factor) | `status`, `days_used`, `curve` (factor per hour), `sum_actual`, `sum_forecast`, `raw_ratio`, `shrink_weight`, `daily_ratios`, `imported_days`, `computed_at` |
 | `sensor.pv_forecast_correction_fog_factor` | k applied (1 when inactive) | `mode`, `reason`, `gate`, `k_shadow`, `k_morning`, `k_recent`, `base_confidence`, `active_since` |
 | `sensor.pv_forecast_correction_error_base` | yesterday's rest-of-day MAE of the base (kWh) | `rest_of_day` per time, `day_error`, `day_ahead_error`, `day_p10_held`, `day_p90_held`, `status` |
@@ -205,6 +207,8 @@ still makes sense: a level-corrected forecast already contains the site's bias.
 With the archive on, the integration keeps every snapshot of the base forecast (including
 P10/P90), the measured energy per 5 minutes, curtailment, and the applied factors every 15
 minutes in `<config>/pv_forecast_correction/<entry_id>.db` (SQLite, about 10–20 MB per year).
+The file is part of Home Assistant backups and stays when the entry is deleted; remove the
+folder by hand if you no longer need it.
 Base forecast lists are not kept by Home Assistant's recorder and forecast providers do not
 keep old runs, so without this archive no variant could be evaluated later against what was
 known at the time.
@@ -247,8 +251,10 @@ inputs and, as the forecast:
   they began (fog days), so the factor comes out somewhat low, and the curve is not
   learned.
 
-Days with gaps are skipped; days the integration measured itself are kept, days imported
-earlier are replaced. Imported days are listed in the `imported_days` attribute of the level
+Days with gaps are skipped; complete days the integration measured itself are kept, days
+imported earlier are replaced. Without `forecast_power`, the day total comes from the
+forecast sensor's long-term statistics if it has them, else from its state history, which the
+recorder keeps for 10 days by default — older days then show `no_forecast`. Imported days are listed in the `imported_days` attribute of the level
 factor and age out like any other day.
 
 ```yaml
@@ -265,8 +271,9 @@ data:
   `days_used` attributes. Days with gaps in the production data (restarts, an unavailable
   sensor) are not used.
 - **A repair issue says the forecast or the production cannot be read.** It appears after an
-  hour without readable input. The correction keeps the last base forecast it had and does
-  not learn from intervals without readings.
+  hour without readable input (for the production: an hour in which production was
+  expected) and disappears once the input works again. The correction keeps the last base
+  forecast it had, including tomorrow's, and does not learn from intervals without readings.
 - **Diagnostics.** *Download diagnostics* on the integration shows the configuration, the
   learned days, the fog layer state, the last day's errors and the archive status.
 

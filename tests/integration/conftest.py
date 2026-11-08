@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
 from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
 from custom_components.pv_forecast_correction.const import (
     CONF_ACTUAL_ENERGY,
@@ -17,6 +19,7 @@ from custom_components.pv_forecast_correction.const import (
     CONF_FORECAST_TODAY,
     CONF_FORECAST_TOMORROW,
     DOMAIN,
+    FORECAST_SETTLE_SECONDS,
 )
 from custom_components.pv_forecast_correction.core.forecast_format import (
     ForecastPoint,
@@ -36,9 +39,17 @@ CURTAILMENT_ENTITY = "binary_sensor.pv_limited"
 
 
 @pytest.fixture(autouse=True)
-def auto_enable_custom_integrations(enable_custom_integrations: None) -> None:
-    """Load the integration from custom_components."""
-    return
+def auto_enable_custom_integrations(
+    enable_custom_integrations: None, hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """Load the integration from custom_components; archives go to a temporary folder."""
+    use_temporary_config_dir(hass, tmp_path)
+
+
+def use_temporary_config_dir(hass: HomeAssistant, tmp_path: Path) -> None:
+    """Archive files and exports land in the config folder; keep them out of the shared
+    test configuration."""
+    hass.config.config_dir = str(tmp_path)
 
 
 def day_points(day: date, peak: float = 4.0) -> list[ForecastPoint]:
@@ -73,6 +84,12 @@ def set_forecasts(hass: HomeAssistant, day: date, peak: float = 4.0) -> None:
     tomorrow = forecast_attributes(day + timedelta(days=1), peak)
     hass.states.async_set(TODAY_ENTITY, str(today["estimate"]), today)
     hass.states.async_set(TOMORROW_ENTITY, str(tomorrow["estimate"]), tomorrow)
+
+
+async def settle(hass: HomeAssistant) -> None:
+    """Forecast changes are read together a moment after the last one."""
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=FORECAST_SETTLE_SECONDS + 1))
+    await hass.async_block_till_done()
 
 
 def local(day: date, hour: int, minute: int = 0) -> datetime:

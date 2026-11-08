@@ -13,7 +13,9 @@ from .coordinator import PvForecastCorrectionConfigEntry
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: PvForecastCorrectionConfigEntry
 ) -> dict[str, Any]:
-    coordinator = entry.runtime_data
+    coordinator = getattr(entry, "runtime_data", None)
+    if coordinator is None:  # not loaded, e.g. after a failed setup
+        return {"config": merged(entry.data, entry.options), "loaded": False}
     engine = coordinator.engine
     archive_stats = None
     if coordinator.archive is not None:

@@ -68,13 +68,19 @@ def replay(
             engine.set_bin(item.start, item.energy_kwh, item.covered_s, item.curtailed, item.gap_s)
             bin_index += 1
 
+    collected: list[DayReport | None] = [None]
+
+    def collect() -> None:
+        report = engine.report
+        if report is not None and report is not collected[0]:
+            collected[0] = report
+            reports[report.day] = report
+            if report.day in engine.history:
+                stats[report.day] = engine.history[report.day]
+
     def advance(when: datetime) -> None:
-        previous = engine.report
         engine.update(when)
-        if engine.report is not None and engine.report is not previous:
-            reports[engine.report.day] = engine.report
-            if engine.report.day in engine.history:
-                stats[engine.report.day] = engine.history[engine.report.day]
+        collect()
 
     snap_index = 0
     while current <= stop:
@@ -86,6 +92,7 @@ def replay(
             snapshot = ordered_snapshots[snap_index]
             feed_bins(snapshot.captured_at)
             engine.set_base(snapshot.forecast, snapshot.captured_at)
+            collect()  # a new base closes the previous day first
             if engine.last_update is None or snapshot.captured_at > engine.last_update:
                 advance(snapshot.captured_at)
             snap_index += 1

@@ -361,6 +361,11 @@ def test_imported_days_teach_the_level_factor_at_once():
     engine.history[yesterday] = DayStats(yesterday, 7.0, 10.0, 18, 0, 0)
     assert engine.import_days([(yesterday, 1.0, 10.0)], at(FIRST, 10)) == 0
     assert engine.import_days([(yesterday, 1.0, 10.0)], at(FIRST, 10), replace=True) == 1
+    # An incomplete measured day (e.g. the day of installation) does not block an import.
+    engine.history[yesterday] = DayStats(yesterday, 2.0, 10.0, 6, 0, 12)
+    assert not engine.history[yesterday].complete
+    assert engine.import_days([(yesterday, 7.0, 10.0)], at(FIRST, 10)) == 1
+    assert engine.history[yesterday].imported
     restored = Corrector.from_dict(engine.to_dict(), Settings(), TZ)
     assert restored.history[FIRST - timedelta(days=2)].imported
 
@@ -389,3 +394,83 @@ def test_time_curve_corrects_weak_mornings():
     engine.recompute_level(at(last, 0, 5))
     assert engine.level_at(at(last, 9)) == pytest.approx(0.4, abs=0.05)
     assert engine.level_at(at(last, 13)) == pytest.approx(0.9, abs=0.05)
+
+
+def _counter_engine(ratio: float, settings: Settings) -> tuple[Corrector, list]:
+    """A live engine fed by a daily counter that steps every 15 minutes (at :01, :16, ...)
+    and is read every 5 minutes, producing ``ratio`` of the forecast."""
+    engine = Corrector(settings, TZ)
+    points = curve(FIRST)
+    engine.set_base(forecast([FIRST, FIRST + timedelta(days=1)]), at(FIRST, 0))
+
+    def produced(until: datetime) -> float:
+        return sum(
+            p.p50
+            * ratio
+            * max(0.0, (min(until, p.start + INTERVAL) - p.start).total_seconds())
+            / 3600
+            for p in points
+            if p.start < until
+        )
+
+    seen = []
+    start, _ = day_bounds(FIRST, TZ)
+    tick = start + timedelta(seconds=5)
+    while tick < at(FIRST, 14):
+        minute = (tick - start).total_seconds() // 60
+        last_step = start + timedelta(minutes=minute - (minute - 1) % 15)
+        engine.observe_energy(last_step, round(produced(last_step), 3), seen=tick)
+        engine.update(tick)
+        seen.append((tick, engine.fog))
+        tick += BIN
+    return engine, seen
+
+
+def test_a_counter_that_steps_every_15_minutes_does_not_fake_fog():
+    """Without waiting for the counter's next step, the minutes since its last step read
+    as zero production and pulled the fog ratios down at every half hour."""
+    settings = Settings(fog=FogSettings(mode=FogMode.ON, gate=FogGate(0.7, 0.5)))
+    engine, seen = _counter_engine(0.82, settings)
+    assert not engine.fog.active
+    later = [state for when, state in seen if when >= at(FIRST, 9) and state.k_morning]
+    assert later
+    assert min(state.k_morning for state in later) == pytest.approx(0.82, abs=0.03)
+    assert min(state.k_recent for state in later) == pytest.approx(0.82, abs=0.03)
+    # The minutes since the last step count with the forecast, not as zero production.
+    result = engine.result(at(FIRST, 14))
+    pending = result.today.estimate - result.actual_so_far - result.remaining.estimate
+    assert 0.3 < pending < 1.0
+
+
+def test_the_recent_window_covers_the_full_two_hours():
+    days = [FIRST]
+    points = curve(FIRST)
+
+    def ratio(start: datetime) -> float:
+        return 0.2 if at(FIRST, 8) <= start < at(FIRST, 8, 30) else 0.6
+
+    engine = Corrector(Settings(fog=FogSettings(mode=FogMode.SHADOW)), TZ)
+    engine.set_base(forecast([*days, FIRST + timedelta(days=1)]), at(FIRST, 0))
+    # Live, updates run a few seconds after each 5-minute mark.
+    offset = timedelta(seconds=5)
+    drive(engine, at(FIRST, 0) + offset, at(FIRST, 10) + offset, bins_from(points, ratio))
+    window = [p for p in points if at(FIRST, 8) <= p.start < at(FIRST, 10)]
+    expected = sum(p.p50 * ratio(p.start) for p in window) / sum(p.p50 for p in window)
+    assert engine.fog.k_recent == pytest.approx(expected)
+
+
+def test_an_outage_over_midnight_leaves_the_day_incomplete():
+    """Home Assistant stopped at 13:00 and came back the next morning; the new base no
+    longer covers the afternoon it missed, which must count as missing, not as night."""
+    engine = Corrector(Settings(), TZ)
+    engine.set_base(forecast([FIRST, FIRST + timedelta(days=1)]), at(FIRST, 0))
+    points = curve(FIRST)
+    drive(engine, at(FIRST, 0), at(FIRST, 13), bins_from(points, 0.9))
+    following = FIRST + timedelta(days=1)
+    engine.set_base(forecast([following, following + timedelta(days=1)]), at(following, 8))
+    engine.update(at(following, 8))
+    stats = engine.history[FIRST]
+    assert stats.missing > 0
+    assert not stats.complete
+    assert engine.report is not None
+    assert engine.report.day == FIRST

@@ -131,7 +131,11 @@ class Archive:
 
     def open(self) -> None:
         """Open or create the file and its schema."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as err:
+            raise ArchiveError(str(err)) from err
+        conn: sqlite3.Connection | None = None
         try:
             conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
             conn.execute("PRAGMA journal_mode=WAL")
@@ -147,11 +151,35 @@ class Archive:
                     (str(SCHEMA_VERSION),),
                 )
             elif int(row[0]) > SCHEMA_VERSION:
-                conn.close()
                 raise ArchiveError(f"archive schema {row[0]} is newer than {SCHEMA_VERSION}")
+        except ArchiveError:
+            if conn is not None:
+                conn.close()
+            raise
         except sqlite3.Error as err:
+            if conn is not None:
+                conn.close()
             raise ArchiveError(str(err)) from err
         self._conn = conn
+
+    def pause_checkpoints(self) -> None:
+        """Write everything into the main file and keep it unchanged until
+        ``resume_checkpoints`` (a backup copies the file meanwhile)."""
+        try:
+            with self._lock:
+                if self._conn is not None:
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    self._conn.execute("PRAGMA wal_autocheckpoint=0")
+        except sqlite3.Error as err:
+            raise ArchiveError(str(err)) from err
+
+    def resume_checkpoints(self) -> None:
+        try:
+            with self._lock:
+                if self._conn is not None:
+                    self._conn.execute("PRAGMA wal_autocheckpoint=1000")
+        except sqlite3.Error as err:
+            raise ArchiveError(str(err)) from err
 
     def close(self) -> None:
         with self._lock:
@@ -182,8 +210,11 @@ class Archive:
 
     def set_meta(self, key: str, value: str) -> None:
         """Store a piece of metadata, e.g. the time zone of the local days."""
-        with self._transaction() as conn:
-            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+        try:
+            with self._transaction() as conn:
+                conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+        except sqlite3.Error as err:
+            raise ArchiveError(str(err)) from err
 
     def get_meta(self, key: str) -> str | None:
         rows = self._query("SELECT value FROM meta WHERE key = ?", (key,))

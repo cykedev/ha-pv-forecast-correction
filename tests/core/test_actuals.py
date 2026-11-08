@@ -201,3 +201,83 @@ def test_energy_meter_restores_state_saved_by_earlier_versions():
     meter.restore({"time": minutes(0).isoformat(), "value": 5.0})
     meter.observe(minutes(10), 5.5)
     assert bins.actual(minutes(0), minutes(10)).energy_kwh == pytest.approx(0.5)
+
+
+def test_a_counter_that_has_not_stepped_yet_is_not_final():
+    """A counter that steps every 15 minutes, read every 5: the minutes since the last step
+    read as zero for now, but they are not final until the next step has come."""
+    bins = BinStore()
+    meter = EnergyMeter(bins)
+    meter.observe(minutes(1), 10.0, seen=minutes(1))
+    meter.observe(minutes(16), 10.5, seen=minutes(20))
+    meter.observe(minutes(16), 10.5, seen=minutes(25))
+    meter.observe(minutes(16), 10.5, seen=minutes(30))
+    assert meter.settled_until == minutes(16)
+    meter.observe(minutes(31), 11.0, seen=minutes(35))
+    assert meter.settled_until == minutes(31)
+    assert bins.actual(minutes(0), minutes(35)).energy_kwh == pytest.approx(1.0)
+    # After a longer standstill nothing can come any more: the night is final.
+    for minute in range(40, 181, 5):
+        meter.observe(minutes(31), 11.0, seen=minutes(minute))
+    assert meter.settled_until == minutes(150)
+
+
+def test_a_missed_daily_reset_is_still_a_reset():
+    """The sensor was unavailable over midnight; the first morning value is above 10 % of
+    yesterday's total but clearly a new day (Home Assistant's rule: a drop below 90 %)."""
+    bins = BinStore()
+    meter = EnergyMeter(bins)
+    meter.observe(minutes(0), 0.8)
+    meter.observe(minutes(10), 0.12)
+    meter.observe(minutes(20), 0.3)
+    assert bins.actual(minutes(0), minutes(20)).energy_kwh == pytest.approx(0.3)
+
+
+def test_a_glitch_after_a_standstill_is_rejected():
+    """The plausibility limit applies to the time the energy is spread over, not to the
+    hours of standstill before it."""
+    bins = BinStore()
+    meter = EnergyMeter(bins, max_power_kw=10.0)
+    meter.observe(minutes(0), 0.0)
+    for minute in range(5, 451, 5):
+        meter.observe(minutes(0), 0.0, seen=minutes(minute))
+    meter.observe(minutes(455), 20.5, seen=minutes(455))  # e.g. yesterday's total again
+    meter.observe(minutes(460), 0.1, seen=minutes(460))
+    assert meter.rejected == 1
+    assert bins.actual(minutes(0), minutes(460)).energy_kwh == pytest.approx(0.1)
+
+
+def test_a_step_after_a_gap_does_not_claim_the_unwatched_time():
+    bins = BinStore()
+    meter = EnergyMeter(bins)
+    meter.observe(minutes(0), 5.0, seen=minutes(0))
+    meter.observe(minutes(0), 5.0, seen=minutes(5))
+    # unavailable from 5 to 35, back with the same value
+    meter.observe(minutes(0), 5.0, seen=minutes(35))
+    meter.observe(minutes(45), 6.0, seen=minutes(45))
+    assert bins.actual(minutes(0), minutes(45)).energy_kwh == pytest.approx(1.0)
+    for start, item in bins.items():
+        assert item.covered_s + item.gap_s <= 300 + 1e-9, start
+    assert bins.actual(minutes(15), minutes(35)).coverage == 0.0
+    assert bins.actual(minutes(35), minutes(45)).coverage == pytest.approx(1.0)
+
+
+def test_energy_after_a_reset_in_a_gap_belongs_to_the_latest_minutes():
+    """Unavailable overnight, the first morning reading is the energy since the reset."""
+    bins = BinStore()
+    meter = EnergyMeter(bins)
+    meter.observe(minutes(0), 9.1, seen=minutes(0))
+    meter.observe(minutes(900), 0.6, seen=minutes(900))
+    night = bins.actual(minutes(0), minutes(870))
+    assert night.energy_kwh == 0.0
+    assert bins.actual(minutes(870), minutes(900)).energy_kwh == pytest.approx(0.6)
+    assert bins.actual(minutes(870), minutes(900)).coverage == 0.0
+
+
+def test_power_meter_is_final_up_to_its_last_reading():
+    bins = BinStore()
+    meter = PowerMeter(bins)
+    assert meter.settled_until is None
+    meter.observe(minutes(0), 2.0)
+    meter.observe(minutes(5), 2.0)
+    assert meter.settled_until == minutes(5)
