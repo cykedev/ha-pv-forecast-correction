@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/ruff-action@v4.1.0
+        with:
+          version: "0.17.4"
+          args: check
+      - uses: astral-sh/ruff-action@v4.1.0
+        with:
+          version: "0.17.4"
+          args: format --check
+
+  core:
+    name: Core and replay (Python ${{ matrix.python-version }}, no Home Assistant)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pytest
+      - run: pytest tests/core tests/tools -W ignore::pytest.PytestConfigWarning
+
+  integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - run: pip install -r requirements_test.txt
+      - run: pytest
