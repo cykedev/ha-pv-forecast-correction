@@ -49,9 +49,9 @@ def test_neutral_without_history():
 def test_shrinkage_formula():
     history = [stats(TODAY - timedelta(days=d), 7.0, 10.0) for d in range(1, 5)]
     level = compute_level_factor(history, TODAY, LevelSettings())
-    # (28 + 2 * 10) / (40 + 2 * 10)
-    assert level.factor == pytest.approx(48 / 60)
-    assert level.shrink_weight == pytest.approx(20.0)
+    # (28 + 1 * 10) / (40 + 1 * 10)
+    assert level.factor == pytest.approx(38 / 50)
+    assert level.shrink_weight == pytest.approx(10.0)
     assert level.raw_ratio == pytest.approx(0.7)
 
 
@@ -99,12 +99,29 @@ def test_time_curve_follows_the_hours_and_shrinks_weak_ones():
     level = compute_level_factor(history, TODAY, LevelSettings(by_time=True))
     curve = dict(level.curve)
     assert curve[9] < level.factor < curve[12]
-    assert curve[9] == pytest.approx(0.4, abs=0.05)
-    assert curve[12] == pytest.approx(0.8, abs=0.05)
+    # Two pseudo-days pull each hour a little toward the day factor.
+    assert curve[12] / curve[9] == pytest.approx(0.8 / 0.4, rel=0.15)
+    # The curve only shapes the day: weighted with each hour's forecast it is the factor.
+    weights = {h: sum(f for d in history for hh, _, f in d.hours if hh == h) for h in curve}
+    mean = sum(curve[h] * w for h, w in weights.items()) / sum(weights.values())
+    assert mean == pytest.approx(level.factor, rel=1e-6)
     # The dawn hour carries almost no energy: it stays near the day factor, not at 0.3.
     assert abs(curve[7] - level.factor) < abs(0.3 - level.factor) / 2
     assert level.at(9) == curve[9]
     assert level.at(3) == level.factor  # hours without data use the day factor
+
+
+def test_days_without_hours_do_not_take_over_the_level():
+    """Imported days known only by their sums set the level with the rest; the one day
+    with hours only shapes it."""
+    history = [DayStats.imported_sums(TODAY - timedelta(days=d), 7.0, 10.0) for d in range(2, 15)]
+    history.append(hourly(TODAY - timedelta(days=1), 0.3, 0.3, dawn=0.3))
+    level = compute_level_factor(history, TODAY, LevelSettings(by_time=True))
+    weights = {h: f for h, _, f in history[-1].hours}
+    curve = dict(level.curve)
+    mean = sum(curve[h] * w for h, w in weights.items()) / sum(weights.values())
+    assert mean == pytest.approx(level.factor, rel=1e-6)
+    assert level.factor > 0.65
 
 
 def test_time_curve_off_or_without_hourly_data():

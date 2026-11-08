@@ -22,6 +22,7 @@ from .const import (
     ATTR_CONFIG_ENTRY_ID,
     ATTR_DAYS,
     ATTR_FORECAST_POWER,
+    CONF_LEVEL_SHRINK_DAYS,
     DOMAIN,
     SERVICE_EXPORT,
     SERVICE_LEARN_FROM_HISTORY,
@@ -30,6 +31,7 @@ from .const import (
     STORE_VERSION,
 )
 from .coordinator import CorrectionCoordinator, PvForecastCorrectionConfigEntry, issue_id
+from .core.level import LevelSettings
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -87,6 +89,23 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         schema=_HISTORY_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    return True
+
+
+OLD_DEFAULT_SHRINK_DAYS = 2.0
+"""Start-up weight before 0.5.0; the default is 1 day since then."""
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: PvForecastCorrectionConfigEntry) -> bool:
+    """Migrate options of older versions."""
+    if entry.version > 1:
+        return False  # written by a newer version
+    if entry.minor_version < 2:
+        options = dict(entry.options)
+        # Options saved before 0.5.0 hold the old default start-up weight; follow the new one.
+        if options.get(CONF_LEVEL_SHRINK_DAYS) == OLD_DEFAULT_SHRINK_DAYS:
+            options[CONF_LEVEL_SHRINK_DAYS] = LevelSettings().shrink_days
+        hass.config_entries.async_update_entry(entry, options=options, minor_version=2)
     return True
 
 

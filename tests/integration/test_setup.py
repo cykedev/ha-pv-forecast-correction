@@ -12,6 +12,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.pv_forecast_correction.const import CONF_LEVEL_SHRINK_DAYS, DOMAIN
+
 from .conftest import (
     CURTAILMENT_ENTITY,
     ENERGY_ENTITY,
@@ -121,3 +123,28 @@ async def test_missing_inputs_do_not_break_setup(
     assert config_entry.state is ConfigEntryState.LOADED
     today = hass.states.get("sensor.pv_forecast_correction_today")
     assert today.state == "unknown"
+
+
+@pytest.mark.usefixtures("berlin")
+async def test_options_with_the_old_default_start_up_weight_are_migrated(
+    hass: HomeAssistant, entry_data, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(local(DAY, 10, 2))
+    set_forecasts(hass, DAY)
+    hass.states.async_set(ENERGY_ENTITY, "1.0", {"unit_of_measurement": "kWh"})
+    old = MockConfigEntry(
+        domain=DOMAIN, data=entry_data, options={CONF_LEVEL_SHRINK_DAYS: 2.0}, version=1
+    )
+    chosen = MockConfigEntry(
+        domain=DOMAIN,
+        data={**entry_data, "forecast_today": "sensor.other_forecast"},
+        options={CONF_LEVEL_SHRINK_DAYS: 3.0},
+        version=1,
+    )
+    await setup(hass, old)
+    chosen.add_to_hass(hass)
+    await hass.config_entries.async_setup(chosen.entry_id)
+    await hass.async_block_till_done()
+    assert old.minor_version == 2
+    assert old.options[CONF_LEVEL_SHRINK_DAYS] == 1.0
+    assert chosen.options[CONF_LEVEL_SHRINK_DAYS] == 3.0  # chosen by the user: kept

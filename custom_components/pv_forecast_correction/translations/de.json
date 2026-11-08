@@ -71,7 +71,7 @@
             "data_description": {
               "level_enabled": "Aus: Der Faktor wird weiter berechnet und angezeigt, aber nicht angewendet.",
               "level_days": "Anzahl vollständiger vergangener Tage im Verhältnis.",
-              "level_shrink_days": "Tage mit Verhältnis 1.0, die hinzugerechnet werden – eine neue Installation startet neutral und wirkt nach etwa einer Woche voll.",
+              "level_shrink_days": "Tage mit Verhältnis 1.0, die hinzugerechnet werden – eine neue Installation startet neutral und kommt in der ersten Woche nah an den gelernten Wert.",
               "level_min": "Der Faktor wird nie kleiner.",
               "level_max": "Der Faktor wird nie größer.",
               "level_by_time": "Lernt aus denselben Tagen einen Faktor für jede Stunde des Tages, damit Stunden, die regelmäßig unter oder über dem Rest des Tages liegen (Nebel am Vormittag, tiefe Sonne), eigens korrigiert werden. Stunden mit wenig Energie bleiben nahe am Tagesfaktor."

@@ -12,11 +12,14 @@ The factor can also vary over the day (time-of-day curve): the same sums per loc
 hour give a factor per hour, shrunk toward the day factor with W pseudo-days of an
 average daylight hour,
 
-    f_h = (actual_h + W * mean_hour * f) / (forecast_h + W * mean_hour)
+    g_h = (actual_h + W * mean_hour * f) / (forecast_h + W * mean_hour)
 
 so hours with little energy (dawn, dusk) stay close to the day factor, while hours that
 run systematically below or above the rest of the day (morning fog in winter, shade at
-low sun that the base does not know) get their own value.
+low sun that the base does not know) get their own value. The curve only shapes the day:
+it is scaled so that its mean, weighted with the forecast energy of each hour, is f
+again (f_h = g_h * f / mean). Without that, the hourly ratios would pull the level toward
+the unshrunk ratio and the factor applied would no longer be the one published.
 """
 
 from __future__ import annotations
@@ -38,7 +41,7 @@ class LevelSettings:
     """Parameters of layer A."""
 
     days: int = 14
-    shrink_days: float = 2.0
+    shrink_days: float = 1.0
     min_factor: float = 0.3
     max_factor: float = 1.5
     by_time: bool = True
@@ -255,7 +258,8 @@ def compute_level_factor(
 def _time_curve(
     used: list[DayStats], factor: float, settings: LevelSettings
 ) -> tuple[tuple[int, float], ...]:
-    """Factor per local clock hour, shrunk toward the day factor."""
+    """Factor per local clock hour: shrunk toward the day factor, then scaled so that its
+    forecast-weighted mean is the day factor."""
     sums: dict[int, list[float]] = {}
     for stats in used:
         for hour, actual, forecast in stats.hours:
@@ -269,9 +273,14 @@ def _time_curve(
         return ()
     mean_hour = sum(forecast / days for _, forecast, days in sums.values()) / len(sums)
     weight = settings.time_shrink_days * mean_hour
-    curve = []
-    for hour in sorted(sums):
-        actual, forecast, _ = sums[hour]
-        value = (actual + weight * factor) / (forecast + weight)
-        curve.append((hour, min(max(value, settings.min_factor), settings.max_factor)))
-    return tuple(curve)
+    shaped = {
+        hour: (actual + weight * factor) / (forecast + weight)
+        for hour, (actual, forecast, _) in sums.items()
+    }
+    total = sum(forecast for _, forecast, _ in sums.values())
+    mean = sum(shaped[hour] * sums[hour][1] for hour in shaped) / total
+    scale = factor / mean if mean > 0 else 1.0
+    return tuple(
+        (hour, min(max(shaped[hour] * scale, settings.min_factor), settings.max_factor))
+        for hour in sorted(shaped)
+    )

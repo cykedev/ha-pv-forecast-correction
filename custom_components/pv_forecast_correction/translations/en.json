@@ -71,7 +71,7 @@
             "data_description": {
               "level_enabled": "Off: the factor is still computed and shown, but not applied.",
               "level_days": "Number of complete past days in the ratio.",
-              "level_shrink_days": "Days at ratio 1.0 added to the ratio, so a fresh install starts neutral and gets there over about a week.",
+              "level_shrink_days": "Days at ratio 1.0 added to the ratio, so a fresh install starts neutral and gets close to the learned value within the first week.",
               "level_min": "The factor never goes below this.",
               "level_max": "The factor never goes above this.",
               "level_by_time": "Learns a factor for every hour of the day from the same days, so hours that regularly run below or above the rest of the day (morning fog, low sun) are corrected on their own. Hours with little energy stay close to the day factor."

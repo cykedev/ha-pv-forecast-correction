@@ -46,8 +46,9 @@ corrected = f × base                                 for today and tomorrow
 - **Complete days only.** A day counts when at most 10 % of its daylight intervals lack
   measurements. Curtailed intervals (export limit, derating) are left out of both sums.
 - **Start-up weight.** K days at ratio 1.0 (F̄ is the mean daily forecast) are added, so a fresh
-  install starts neutral and reaches the full factor after about a week. Defaults: N = 14,
-  K = 2, limits 0.3–1.5.
+  install starts neutral and gets close to the full factor within the first week. Defaults:
+  N = 14, K = 1, limits 0.3–1.5. On the reference data K = 1 lowered the error by 6–7 %
+  against K = 2; it still keeps a single odd first day from taking over.
 - **Once per night.** The factor is computed after midnight and stays constant during the
   day, so consumers see a stable number.
 - **Works with the base's own corrections.** The factor learns from the forecast as it was
@@ -58,9 +59,10 @@ corrected = f × base                                 for today and tomorrow
   hour of the day, drawn toward the day factor by two days' worth of an average daylight
   hour. Hours that regularly run below or above the rest of the day — fog that lingers in
   the morning in winter, shade at low sun that the base does not model — get their own
-  value; hours with little energy stay close to the day factor. On the reference data this
-  lowered the rest-of-day error by a further 11 % (summer) to 17 % (autumn) and the
-  day-ahead error by 7–16 %, with every checkpoint better.
+  value; hours with little energy stay close to the day factor. The curve only shapes the
+  day: it is scaled so that its mean, weighted with each hour's forecast energy, is the
+  published factor f. On the reference data it lowered the rest-of-day error by 5 % over a
+  summer (107 days) and made no measurable difference over nine autumn days.
 
 ### Fog layer (shadow by default)
 
@@ -138,7 +140,7 @@ integration). Several entries are possible, e.g. one per base forecast.
 | Level factor | Apply | on | Off: computed and shown, not applied. |
 | | Factor by time of day | on | One factor per clock hour instead of one per day. |
 | | Days learned from | 14 | Complete past days in the ratio. |
-| | Start-up weight | 2 days | Days at ratio 1.0 added to the ratio. |
+| | Start-up weight | 1 day | Days at ratio 1.0 added to the ratio. |
 | | Lowest / highest factor | 0.3 / 1.5 | Limits of the factor. |
 | Fog layer | Mode | shadow | `off`, `shadow` (compute and show) or `on` (apply). |
 | | Threshold | 0.7 | Opens when the morning and the recent window produced less than this share of the forecast. |

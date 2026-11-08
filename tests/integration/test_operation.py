@@ -70,7 +70,7 @@ async def test_days_are_learned_scored_and_archived(
 
     level = hass.states.get("sensor.pv_forecast_correction_level_factor")
     assert level.attributes["days_used"] == 2
-    assert float(level.state) == pytest.approx((2 * RATIO + 2) / 4, abs=0.01)
+    assert float(level.state) == pytest.approx((2 * RATIO + 1) / 3, abs=0.01)
     assert level.attributes["status"] == "learning"
 
     base = hass.states.get("sensor.pv_forecast_correction_error_base")

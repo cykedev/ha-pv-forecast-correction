@@ -95,11 +95,11 @@ async def test_learns_the_level_factor_from_statistics(
         assert item["actual_kwh"] == pytest.approx(9.0)
         assert item["forecast_kwh"] == pytest.approx(15.0)
     assert results[(FIRST - timedelta(days=1)).isoformat()]["result"] == "no_production"
-    # (3 x 9 + 2 x 15) / (3 x 15 + 2 x 15)
-    assert response["level_factor"] == pytest.approx(57 / 75, abs=1e-3)
+    # (3 x 9 + 1 x 15) / (3 x 15 + 1 x 15)
+    assert response["level_factor"] == pytest.approx(42 / 60, abs=1e-3)
 
     level = hass.states.get("sensor.pv_forecast_correction_level_factor")
-    assert float(level.state) == pytest.approx(57 / 75, abs=1e-3)
+    assert float(level.state) == pytest.approx(42 / 60, abs=1e-3)
     assert level.attributes["imported_days"] == [d.isoformat() for d in days]
 
 

@@ -46,7 +46,7 @@ def test_level_factor_learns_the_bias_with_shrinkage():
     assert by_day[0].level_factor == 1.0
     for index, report in enumerate(by_day):
         days = min(index, 14)
-        assert report.level_factor == pytest.approx((0.7 * days + 2) / (days + 2))
+        assert report.level_factor == pytest.approx((0.7 * days + 1) / (days + 1))
 
 
 def test_corrected_beats_base_on_biased_days():
@@ -351,7 +351,7 @@ def test_imported_days_teach_the_level_factor_at_once():
     days.append((FIRST, 1.0, 10.0))  # today is never imported
     assert engine.import_days(days, at(FIRST, 10)) == 4
     assert engine.level.days_used == 4
-    assert engine.level.factor == pytest.approx((28 + 20) / (40 + 20))
+    assert engine.level.factor == pytest.approx((28 + 10) / (40 + 10))
     # A later import replaces imported days ...
     yesterday = FIRST - timedelta(days=1)
     hours = ((9, 1.0, 2.0), (12, 2.0, 3.0))
