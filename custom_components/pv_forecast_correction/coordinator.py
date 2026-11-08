@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
-from datetime import datetime, timedelta
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,8 @@ from .const import (
 )
 from .core import Corrector, Forecast, ForecastFormatError, Result, Settings, parse_forecast
 from .core.archive import Archive, ArchiveError, CorrectionRow, MeasuredBin
+from .core.history import HOUR, days_from_hourly
+from .core.timeline import day_bounds, steps
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -456,6 +459,102 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
         files = await self.hass.async_add_executor_job(self.archive.export_csv, target)
         return [str(path) for path in files]
 
+    async def async_learn_from_history(self, days: int) -> dict[str, Any]:
+        """Learn the level factor from the recorder's history of the last ``days`` days.
+
+        Uses the long-term statistics of the production inputs and the forecast's day total
+        (statistics, else its state history) as it stood before production began. Days
+        measured by the integration itself are kept.
+        """
+        from homeassistant.components.recorder import get_instance
+        from homeassistant.components.recorder.history import (
+            state_changes_during_period,
+        )
+        from homeassistant.components.recorder.statistics import (
+            statistics_during_period,
+        )
+
+        tz = dt_util.get_default_time_zone()
+        now = dt_util.utcnow()
+        today = dt_util.as_local(now).date()
+        first_day = today - timedelta(days=days)
+        last_day = today - timedelta(days=1)
+        start, _ = day_bounds(first_day, tz)
+        _, end = day_bounds(last_day, tz)
+        recorder = get_instance(self.hass)
+        forecast_id = self.inputs.forecast_today
+        stats = await recorder.async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            start,
+            end,
+            {*self.inputs.actual_entities, forecast_id},
+            "hour",
+            {"energy": UnitOfEnergy.KILO_WATT_HOUR, "power": UnitOfPower.KILO_WATT},
+            {"change", "mean", "state"},
+        )
+
+        def hourly(entity_id: str, key: str) -> dict[datetime, float]:
+            return {
+                datetime.fromtimestamp(row["start"], UTC): float(row[key])
+                for row in stats.get(entity_id, [])
+                if row.get(key) is not None
+            }
+
+        if self.inputs.actual_energy:
+            energy = hourly(self.inputs.actual_energy, "change")
+        else:
+            series = [hourly(entity_id, "mean") for entity_id in self.inputs.actual_power]
+            shared = set.intersection(*(set(item) for item in series)) if series else set()
+            energy = {hour: sum(item[hour] for item in series) for hour in shared}
+
+        forecast = hourly(forecast_id, "state") or hourly(forecast_id, "mean")
+        if not forecast:
+            states = await recorder.async_add_executor_job(
+                partial(
+                    state_changes_during_period,
+                    self.hass,
+                    start,
+                    end,
+                    forecast_id,
+                    no_attributes=True,
+                    include_start_time_state=True,
+                )
+            )
+            forecast = _hourly_state_totals(states.get(forecast_id, []), start, end)
+
+        result = days_from_hourly(energy, forecast, tz, first_day, last_day)
+        usable = [day for day in result if day.usable]
+        taken = self.engine.import_days(
+            ((d.day, d.actual_kwh or 0.0, d.forecast_kwh or 0.0) for d in usable), now
+        )
+        await self._store.async_save(self.engine.to_dict())
+        self._refresh(now)
+        learned = self.engine.history
+        return {
+            "days": [
+                {
+                    "date": day.day.isoformat(),
+                    "actual_kwh": None if day.actual_kwh is None else round(day.actual_kwh, 3),
+                    "forecast_kwh": None
+                    if day.forecast_kwh is None
+                    else round(day.forecast_kwh, 3),
+                    "forecast_as_of": None
+                    if day.forecast_as_of is None
+                    else day.forecast_as_of.isoformat(),
+                    "result": day.skipped.value
+                    if day.skipped is not None
+                    else "imported"
+                    if learned.get(day.day) is not None and learned[day.day].imported
+                    else "kept_measured",
+                }
+                for day in result
+            ],
+            "imported": taken,
+            "level_factor": round(self.engine.level.factor, 4),
+            "days_used": self.engine.level.days_used,
+        }
+
     async def async_reset(self, *, clear_archive: bool) -> None:
         """Forget what layer A learned (and optionally the archive)."""
         self.engine.reset_learning()
@@ -465,3 +564,25 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
             await self.hass.async_add_executor_job(self.archive.clear)
         await self._store.async_save(self.engine.to_dict())
         self._refresh(now)
+
+
+def _hourly_state_totals(
+    states: Sequence[Any], start: datetime, end: datetime
+) -> dict[datetime, float]:
+    """Value of a state history as it stood at the end of each hour."""
+    values: list[tuple[datetime, float]] = []
+    for state in states:
+        try:
+            values.append((state.last_changed, float(state.state)))
+        except (TypeError, ValueError):
+            continue
+    result: dict[datetime, float] = {}
+    index = 0
+    current: float | None = None
+    for hour in steps(start, end, HOUR):
+        while index < len(values) and values[index][0] < hour + HOUR:
+            current = values[index][1]
+            index += 1
+        if current is not None:
+            result[hour] = current
+    return result

@@ -185,6 +185,11 @@ SENSORS: tuple[CorrectionSensorDescription, ...] = (
             "clamped": r.level.clamped,
             "computed_at": r.level.computed_at,
             "daily_ratios": _daily_ratios(r),
+            "imported_days": [
+                stats.day.isoformat()
+                for stats in r.history
+                if stats.imported and stats.day in r.level.days
+            ],
         },
     ),
     CorrectionSensorDescription(

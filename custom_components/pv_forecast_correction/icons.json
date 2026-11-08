@@ -13,6 +13,7 @@
   },
   "services": {
     "export": { "service": "mdi:file-export-outline" },
-    "reset": { "service": "mdi:restore" }
+    "reset": { "service": "mdi:restore" },
+    "learn_from_history": { "service": "mdi:history" }
   }
 }

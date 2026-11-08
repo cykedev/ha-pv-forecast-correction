@@ -217,7 +217,23 @@ installation.
 | Service | Description |
 |---|---|
 | `pv_forecast_correction.export` | Writes the archive of an entry as CSV files into `<config>/pv_forecast_correction/export/` and returns their paths. |
+| `pv_forecast_correction.learn_from_history` | Learns the level factor from the recorder's history of the last days (see below) and returns what it used per day. |
 | `pv_forecast_correction.reset` | Forgets the learned days (the level factor starts neutral again); optionally clears the archive. |
+
+### Starting with history
+
+A fresh install starts with a neutral level factor. To start with what Home Assistant has
+already recorded, call `pv_forecast_correction.learn_from_history` (default: the last 14
+days). Per day it takes
+
+- the measured energy from the long-term statistics of the production inputs, and
+- the base forecast's day total as it stood before production began (its long-term
+  statistics, else its state history),
+
+skips days with gaps, and keeps days the integration measured itself. The day total at the
+start of production stands in for the forecast of record, which recorders do not keep; on
+real data the resulting factor differed from the exact value by about 1 %. Imported days are
+listed in the `imported_days` attribute of the level factor and age out like any other day.
 
 ## Troubleshooting
 

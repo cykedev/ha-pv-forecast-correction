@@ -250,6 +250,26 @@ class Corrector:
         """Recompute the level factor now (after settings changed or a reset)."""
         self._compute_level(as_utc(now))
 
+    def import_days(
+        self, days: Iterable[tuple[date, float, float]], now: datetime, *, replace: bool = False
+    ) -> int:
+        """Learn from days known only by their sums ``(day, measured kWh, forecast kWh)``,
+        for example from a replay of older data. Days measured here win unless ``replace``.
+        Returns the number of days taken over and recomputes the level factor."""
+        today = self.day if self.day is not None else local_day(now, self.tz)
+        taken = 0
+        for day, actual, forecast in days:
+            if day >= today or forecast <= 0 or actual < 0:
+                continue
+            if day in self.history and not replace:
+                continue
+            self.history[day] = DayStats.imported_sums(day, actual, forecast)
+            taken += 1
+        if self.day is None:
+            self.day = today
+        self._compute_level(as_utc(now))
+        return taken
+
     def reset_learning(self) -> None:
         """Forget the day statistics; the level factor returns to neutral."""
         self.history.clear()

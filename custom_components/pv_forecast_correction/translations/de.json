@@ -251,6 +251,9 @@
           },
           "daily_ratios": {
             "name": "Verhältnis je Tag"
+          },
+          "imported_days": {
+            "name": "Importierte Tage"
           }
         }
       },
@@ -439,6 +442,20 @@
           "description": "Löscht zusätzlich alle archivierten Daten."
         }
       }
+    },
+    "learn_from_history": {
+      "name": "Aus dem Verlauf lernen",
+      "description": "Lernt den Niveau-Faktor aus der Aufzeichnung: gemessene Energie je Tag aus der Langzeitstatistik der Erzeugung und die Tagessumme der Prognose, wie sie vor Beginn der Erzeugung stand. Tage, die die Integration selbst gemessen hat, bleiben erhalten. Nützlich direkt nach der Installation.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Eintrag",
+          "description": "Der PV-Forecast-Correction-Eintrag, der lernt."
+        },
+        "days": {
+          "name": "Tage",
+          "description": "Wie viele vergangene Tage gelesen werden."
+        }
+      }
     }
   },
   "exceptions": {
@@ -447,6 +464,9 @@
     },
     "archive_disabled": {
       "message": "Das Archiv ist abgeschaltet oder konnte nicht geöffnet werden."
+    },
+    "recorder_unavailable": {
+      "message": "Die Aufzeichnung (Recorder) ist nicht verfügbar, es gibt keinen Verlauf zum Lernen."
     }
   },
   "issues": {

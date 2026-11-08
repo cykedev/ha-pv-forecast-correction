@@ -48,6 +48,8 @@ class DayStats:
     intervals: int
     curtailed: int
     missing: int
+    imported: bool = False
+    """Day sums imported from elsewhere (e.g. a replay of older data), not measured here."""
 
     @property
     def daylight(self) -> int:
@@ -57,6 +59,8 @@ class DayStats:
     @property
     def complete(self) -> bool:
         """Usable for the level factor."""
+        if self.imported:
+            return self.forecast_kwh > 0 and self.actual_kwh >= 0
         return (
             self.intervals > 0
             and self.forecast_kwh > 0
@@ -69,7 +73,7 @@ class DayStats:
         return self.actual_kwh / self.forecast_kwh if self.forecast_kwh > 0 else None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "day": self.day.isoformat(),
             "actual_kwh": round(self.actual_kwh, 4),
             "forecast_kwh": round(self.forecast_kwh, 4),
@@ -77,6 +81,9 @@ class DayStats:
             "curtailed": self.curtailed,
             "missing": self.missing,
         }
+        if self.imported:
+            data["imported"] = True
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DayStats:
@@ -87,7 +94,13 @@ class DayStats:
             intervals=int(data["intervals"]),
             curtailed=int(data["curtailed"]),
             missing=int(data["missing"]),
+            imported=bool(data.get("imported", False)),
         )
+
+    @classmethod
+    def imported_sums(cls, day: date, actual_kwh: float, forecast_kwh: float) -> DayStats:
+        """A day known only by its sums: measured and forecast-of-record energy."""
+        return cls(day, actual_kwh, forecast_kwh, 0, 0, 0, imported=True)
 
 
 def day_stats(day: date, intervals: Iterable[tuple[float | None, IntervalActual]]) -> DayStats:

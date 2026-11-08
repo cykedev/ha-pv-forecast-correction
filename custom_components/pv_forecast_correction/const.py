@@ -48,5 +48,7 @@ ISSUE_AFTER_MINUTES: Final = 60
 
 SERVICE_EXPORT: Final = "export"
 SERVICE_RESET: Final = "reset"
+SERVICE_LEARN_FROM_HISTORY: Final = "learn_from_history"
 ATTR_CONFIG_ENTRY_ID: Final = "config_entry_id"
 ATTR_CLEAR_ARCHIVE: Final = "clear_archive"
+ATTR_DAYS: Final = "days"

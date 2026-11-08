@@ -251,6 +251,9 @@
           },
           "daily_ratios": {
             "name": "Ratio per day"
+          },
+          "imported_days": {
+            "name": "Imported days"
           }
         }
       },
@@ -439,6 +442,20 @@
           "description": "Also delete all archived data."
         }
       }
+    },
+    "learn_from_history": {
+      "name": "Learn from history",
+      "description": "Learns the level factor from the recorder: measured energy per day from the long-term statistics of the production inputs, and the forecast's day total as it stood before production began. Days the integration measured itself are kept. Useful right after installation.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Entry",
+          "description": "The PV Forecast Correction entry that learns."
+        },
+        "days": {
+          "name": "Days",
+          "description": "How many past days to read."
+        }
+      }
     }
   },
   "exceptions": {
@@ -447,6 +464,9 @@
     },
     "archive_disabled": {
       "message": "The archive is disabled or could not be opened."
+    },
+    "recorder_unavailable": {
+      "message": "The recorder is not available, so there is no history to learn from."
     }
   },
   "issues": {

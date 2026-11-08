@@ -1,6 +1,7 @@
 {
   "domain": "pv_forecast_correction",
   "name": "PV Forecast Correction",
+  "after_dependencies": ["recorder"],
   "codeowners": ["@cykedev"],
   "config_flow": true,
   "documentation": "https://github.com/cykedev/ha-pv-forecast-correction",

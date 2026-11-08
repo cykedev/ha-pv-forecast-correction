@@ -20,8 +20,10 @@ from homeassistant.helpers.typing import ConfigType
 from .const import (
     ATTR_CLEAR_ARCHIVE,
     ATTR_CONFIG_ENTRY_ID,
+    ATTR_DAYS,
     DOMAIN,
     SERVICE_EXPORT,
+    SERVICE_LEARN_FROM_HISTORY,
     SERVICE_RESET,
     STORAGE_KEY,
     STORE_VERSION,
@@ -33,6 +35,9 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 _ENTRY_SCHEMA = vol.Schema({vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string})
 _RESET_SCHEMA = _ENTRY_SCHEMA.extend({vol.Optional(ATTR_CLEAR_ARCHIVE, default=False): cv.boolean})
+_HISTORY_SCHEMA = _ENTRY_SCHEMA.extend(
+    {vol.Optional(ATTR_DAYS, default=14): vol.All(vol.Coerce(int), vol.Range(min=1, max=60))}
+)
 
 
 def _coordinator(hass: HomeAssistant, call: ServiceCall) -> CorrectionCoordinator:
@@ -59,7 +64,23 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         schema=_ENTRY_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
+
+    async def learn_from_history(call: ServiceCall) -> ServiceResponse:
+        coordinator = _coordinator(hass, call)
+        if "recorder" not in hass.config.components:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN, translation_key="recorder_unavailable"
+            )
+        return await coordinator.async_learn_from_history(call.data[ATTR_DAYS])
+
     hass.services.async_register(DOMAIN, SERVICE_RESET, reset, schema=_RESET_SCHEMA)
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LEARN_FROM_HISTORY,
+        learn_from_history,
+        schema=_HISTORY_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
     return True
 
 

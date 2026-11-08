@@ -341,3 +341,21 @@ def test_expects_production_follows_the_base():
     engine.set_base(forecast([FIRST]), start)
     assert not engine.expects_production(at(FIRST, 2))
     assert engine.expects_production(at(FIRST, 12))
+
+
+def test_imported_days_teach_the_level_factor_at_once():
+    engine = Corrector(Settings(), TZ)
+    engine.update(at(FIRST, 10))
+    days = [(FIRST - timedelta(days=offset), 7.0, 10.0) for offset in range(1, 5)]
+    days.append((FIRST, 1.0, 10.0))  # today is never imported
+    assert engine.import_days(days, at(FIRST, 10)) == 4
+    assert engine.level.days_used == 4
+    assert engine.level.factor == pytest.approx((28 + 20) / (40 + 20))
+    # Measured days win unless asked otherwise.
+    assert engine.import_days([(FIRST - timedelta(days=1), 1.0, 10.0)], at(FIRST, 10)) == 0
+    assert (
+        engine.import_days([(FIRST - timedelta(days=1), 1.0, 10.0)], at(FIRST, 10), replace=True)
+        == 1
+    )
+    restored = Corrector.from_dict(engine.to_dict(), Settings(), TZ)
+    assert restored.history[FIRST - timedelta(days=2)].imported
