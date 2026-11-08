@@ -142,7 +142,11 @@ integration). Several entries are possible, e.g. one per base forecast.
 
 ## Entities
 
-Entity IDs below are for an entry named *PV Forecast Correction*.
+Entity IDs below are for an entry named *PV Forecast Correction* in an English Home
+Assistant whose device has no area. Home Assistant derives the IDs from the translated names
+and the device's area, so in another language or with an area they differ (for example
+`sensor.kitchen_pv_forecast_correction_heute`); rename them in the entity settings if you
+like — the integration does not depend on them.
 
 | Entity | State | Main attributes |
 |---|---|---|
