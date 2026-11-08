@@ -74,3 +74,23 @@ def test_a_counter_blip_at_night_is_not_the_start_of_production():
     [result] = days_from_hourly(energy, forecast, TZ, DAY, DAY)
     assert result.forecast_as_of == hour(DAY, 8)
     assert result.actual_kwh == pytest.approx(9.002)
+
+
+def test_forecast_per_hour_gives_day_sum_and_hours():
+    energy = series(DAY)
+    forecast = {hour(DAY, h): 40.0 for h in range(24)}  # day total far off: not used
+    hourly = {hour(DAY, h): (2.0 if 8 <= h < 17 else 0.0) for h in range(24)}
+    [result] = days_from_hourly(energy, forecast, TZ, DAY, DAY, hourly_forecast=hourly)
+    assert result.forecast_kwh == pytest.approx(18.0)
+    assert result.actual_kwh == pytest.approx(9.0)
+    assert len(result.hours) == 9
+    assert result.hours[0] == (8, 1.0, 2.0)
+
+
+def test_falls_back_to_the_day_total_without_hourly_forecast():
+    energy = series(DAY)
+    forecast = {hour(DAY, h): 20.0 for h in range(24)}
+    hourly = {hour(DAY, h): 2.0 for h in range(8, 12)}  # incomplete: not used
+    [result] = days_from_hourly(energy, forecast, TZ, DAY, DAY, hourly_forecast=hourly)
+    assert result.forecast_kwh == 20.0
+    assert result.hours == ()

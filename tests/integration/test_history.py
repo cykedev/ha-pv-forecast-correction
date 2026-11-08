@@ -101,3 +101,63 @@ async def test_learns_the_level_factor_from_statistics(
     level = hass.states.get("sensor.pv_forecast_correction_level_factor")
     assert float(level.state) == pytest.approx(57 / 75, abs=1e-3)
     assert level.attributes["imported_days"] == [d.isoformat() for d in days]
+
+
+@pytest.mark.usefixtures("berlin")
+async def test_forecast_power_gives_hours_and_the_time_of_day_curve(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    power_now = "sensor.solar_forecast_power_now"
+    days = [FIRST, FIRST + timedelta(days=1), FIRST + timedelta(days=2)]
+    freezer.move_to(local(FIRST + timedelta(days=3), 10, 0))
+    _import_history(hass, days)
+    rows = []
+    start, _ = day_bounds(days[0], TZ)
+    _, end = day_bounds(days[-1], TZ)
+    hour = start
+    while hour < end:
+        local_hour = hour.astimezone(TZ).hour
+        # Forecast of record: 2 kW in the morning (8-10 h), 1.5 kW from 11 h to 16 h.
+        watts = 2000.0 if 8 <= local_hour < 11 else 1500.0 if 11 <= local_hour < 17 else 0.0
+        rows.append({"start": hour, "mean": watts, "min": watts, "max": watts})
+        hour += timedelta(hours=1)
+    async_import_statistics(
+        hass,
+        {
+            "mean_type": StatisticMeanType.ARITHMETIC,
+            "has_sum": False,
+            "name": None,
+            "source": "recorder",
+            "statistic_id": power_now,
+            "unit_class": "power",
+            "unit_of_measurement": "W",
+        },
+        rows,
+    )
+    await async_wait_recording_done(hass)
+
+    set_forecasts(hass, FIRST + timedelta(days=3))
+    hass.states.async_set(ENERGY_ENTITY, "2.0", {"unit_of_measurement": "kWh"})
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    response = await hass.services.async_call(
+        DOMAIN,
+        "learn_from_history",
+        {"config_entry_id": config_entry.entry_id, "days": 5, "forecast_power": power_now},
+        blocking=True,
+        return_response=True,
+    )
+    results = {item["date"]: item for item in response["days"]}
+    for day in days:
+        item = results[day.isoformat()]
+        assert item["forecast_from"] == "hourly"
+        assert item["forecast_kwh"] == pytest.approx(3 * 2.0 + 6 * 1.5)
+    curve = response["curve"]
+    # Measured 1 kWh every hour: 50 % of the morning forecast, 67 % of the midday one.
+    assert curve["09:00"] < curve["13:00"]
+    level = hass.states.get("sensor.pv_forecast_correction_level_factor")
+    assert level.attributes["curve"]["09:00"] == pytest.approx(curve["09:00"], abs=1e-3)

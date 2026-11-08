@@ -459,12 +459,16 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
         files = await self.hass.async_add_executor_job(self.archive.export_csv, target)
         return [str(path) for path in files]
 
-    async def async_learn_from_history(self, days: int) -> dict[str, Any]:
+    async def async_learn_from_history(
+        self, days: int, forecast_power: str | None = None
+    ) -> dict[str, Any]:
         """Learn the level factor from the recorder's history of the last ``days`` days.
 
-        Uses the long-term statistics of the production inputs and the forecast's day total
-        (statistics, else its state history) as it stood before production began. Days
-        measured by the integration itself are kept.
+        Uses the long-term statistics of the production inputs and, per hour, of
+        ``forecast_power`` (a sensor with the base forecast's power for the current moment)
+        when given; otherwise the forecast's day total (statistics, else its state history)
+        as it stood before production began. Days measured by the integration itself are
+        kept; days imported earlier are replaced.
         """
         from homeassistant.components.recorder import get_instance
         from homeassistant.components.recorder.history import (
@@ -483,12 +487,15 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
         _, end = day_bounds(last_day, tz)
         recorder = get_instance(self.hass)
         forecast_id = self.inputs.forecast_today
+        ids = {*self.inputs.actual_entities, forecast_id}
+        if forecast_power:
+            ids.add(forecast_power)
         stats = await recorder.async_add_executor_job(
             statistics_during_period,
             self.hass,
             start,
             end,
-            {*self.inputs.actual_entities, forecast_id},
+            ids,
             "hour",
             {"energy": UnitOfEnergy.KILO_WATT_HOUR, "power": UnitOfPower.KILO_WATT},
             {"change", "mean", "state"},
@@ -523,10 +530,14 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
             )
             forecast = _hourly_state_totals(states.get(forecast_id, []), start, end)
 
-        result = days_from_hourly(energy, forecast, tz, first_day, last_day)
+        # Mean power over an hour in kW equals the energy of that hour in kWh.
+        hourly_forecast = hourly(forecast_power, "mean") if forecast_power else None
+        result = days_from_hourly(
+            energy, forecast, tz, first_day, last_day, hourly_forecast=hourly_forecast
+        )
         usable = [day for day in result if day.usable]
         taken = self.engine.import_days(
-            ((d.day, d.actual_kwh or 0.0, d.forecast_kwh or 0.0) for d in usable), now
+            ((d.day, d.actual_kwh or 0.0, d.forecast_kwh or 0.0, d.hours) for d in usable), now
         )
         await self._store.async_save(self.engine.to_dict())
         self._refresh(now)
@@ -539,6 +550,7 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
                     "forecast_kwh": None
                     if day.forecast_kwh is None
                     else round(day.forecast_kwh, 3),
+                    "forecast_from": "hourly" if day.hours else "day_total",
                     "forecast_as_of": None
                     if day.forecast_as_of is None
                     else day.forecast_as_of.isoformat(),
@@ -553,6 +565,7 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
             "imported": taken,
             "level_factor": round(self.engine.level.factor, 4),
             "days_used": self.engine.level.days_used,
+            "curve": {f"{hour:02d}:00": round(value, 3) for hour, value in self.engine.level.curve},
         }
 
     async def async_reset(self, *, clear_archive: bool) -> None:

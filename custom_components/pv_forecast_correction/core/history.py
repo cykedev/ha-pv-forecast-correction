@@ -2,11 +2,16 @@
 
 The level factor learns from the forecast of record: the value the base forecast held for
 each interval when it began. Recorders do not keep the forecast lists, but they keep the
-base forecast's day total and the measured energy per hour. The day total as it stood
-before the first hour with production is used in place of the forecast of record; on the
-reference data it matched the exact value without bias (8 % per day, which averages out
-over the days the factor uses). The day total at the end of the day does not work: a
-forecast provider may revise intervals that have passed.
+measured energy per hour and, depending on the base integration, two forecast signals:
+
+- a sensor with the forecast power for the current moment (Solcast "Power Now", Forecast.Solar
+  "Estimated power production - now"). Its hourly mean is the forecast of record per hour,
+  because the sensor always shows the value the base holds for the running interval. This
+  also gives the time-of-day curve its hourly sums. Preferred.
+- the base forecast's day total. As it stood before the first hour with production it stands
+  in for the day's forecast of record; it overstates it on days whose later intervals were
+  revised down before they began (fog days), so the factor comes out a little low. The day
+  total at the end of the day does not work: providers revise intervals that have passed.
 """
 
 from __future__ import annotations
@@ -44,6 +49,8 @@ class HistoryDay:
     forecast_kwh: float | None = None
     forecast_as_of: datetime | None = None
     skipped: HistorySkip | None = None
+    hours: tuple[tuple[int, float, float], ...] = ()
+    """``(local hour, actual kWh, forecast kWh)`` when the forecast per hour was known."""
 
     @property
     def usable(self) -> bool:
@@ -56,26 +63,33 @@ def days_from_hourly(
     tz: tzinfo,
     first_day: date,
     last_day: date,
+    hourly_forecast: Mapping[datetime, float] | None = None,
 ) -> list[HistoryDay]:
     """Day sums from hourly series keyed by the hour's start (UTC).
 
     ``energy`` is the energy measured in each hour (kWh). ``forecast`` is the base
-    forecast's total for the day as it stood at the end of each hour (kWh). A day is used
-    when every hour between its first and last producing hour has a measurement and a
-    forecast total is known before production began.
+    forecast's total for the day as it stood at the end of each hour (kWh).
+    ``hourly_forecast`` is the forecast of record per hour (kWh), when known; a day it
+    covers is summed from it, hour by hour. A day is used when every hour between its
+    first and last producing hour has a measurement and a forecast is known.
     """
     energy = {as_utc(k): v for k, v in energy.items()}
     forecast = {as_utc(k): v for k, v in forecast.items()}
+    hourly = {as_utc(k): v for k, v in (hourly_forecast or {}).items()}
     result: list[HistoryDay] = []
     day = first_day
     while day <= last_day:
-        result.append(_day(day, energy, forecast, tz))
+        result.append(_day(day, energy, forecast, hourly, tz))
         day += timedelta(days=1)
     return result
 
 
 def _day(
-    day: date, energy: Mapping[datetime, float], forecast: Mapping[datetime, float], tz: tzinfo
+    day: date,
+    energy: Mapping[datetime, float],
+    forecast: Mapping[datetime, float],
+    hourly: Mapping[datetime, float],
+    tz: tzinfo,
 ) -> HistoryDay:
     start, end = day_bounds(day, tz)
     hours = list(steps(start, end, HOUR))
@@ -88,6 +102,16 @@ def _day(
     if any(hour not in energy for hour in steps(first, last + HOUR, HOUR)):
         return HistoryDay(day, skipped=HistorySkip.MISSING_HOURS)
     actual = sum(max(energy.get(hour, 0.0), 0.0) for hour in hours)
+
+    if all(hour in hourly for hour in steps(first, last + HOUR, HOUR)):
+        per_hour = tuple(
+            (hour.astimezone(tz).hour, max(energy.get(hour, 0.0), 0.0), hourly[hour])
+            for hour in hours
+            if hourly.get(hour, 0.0) > 0
+        )
+        total = sum(f for _, _, f in per_hour)
+        if total > 0:
+            return HistoryDay(day, actual_kwh=actual, forecast_kwh=total, hours=per_hour)
 
     total = as_of = None
     for back in range(1, FORECAST_LOOKBACK_HOURS + 1):

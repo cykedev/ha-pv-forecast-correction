@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from dataclasses import replace as replace_stats
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import Any
 
@@ -258,19 +259,29 @@ class Corrector:
         self._compute_level(as_utc(now))
 
     def import_days(
-        self, days: Iterable[tuple[date, float, float]], now: datetime, *, replace: bool = False
+        self,
+        days: Iterable[tuple[date, float, float] | tuple[date, float, float, tuple]],
+        now: datetime,
+        *,
+        replace: bool = False,
     ) -> int:
         """Learn from days known only by their sums ``(day, measured kWh, forecast kWh)``,
-        for example from a replay of older data. Days measured here win unless ``replace``.
-        Returns the number of days taken over and recomputes the level factor."""
+        optionally with sums per clock hour ``((hour, measured, forecast), ...)``, for
+        example from the recorder's history. Days measured here win unless ``replace``;
+        days imported earlier are replaced. Returns the number of days taken over and
+        recomputes the level factor."""
         today = self.day if self.day is not None else local_day(now, self.tz)
         taken = 0
-        for day, actual, forecast in days:
+        for day, actual, forecast, *rest in days:
             if day >= today or forecast <= 0 or actual < 0:
                 continue
-            if day in self.history and not replace:
+            existing = self.history.get(day)
+            if existing is not None and not existing.imported and not replace:
                 continue
-            self.history[day] = DayStats.imported_sums(day, actual, forecast)
+            hours = tuple(rest[0]) if rest else ()
+            self.history[day] = replace_stats(
+                DayStats.imported_sums(day, actual, forecast), hours=hours
+            )
             taken += 1
         if self.day is None:
             self.day = today

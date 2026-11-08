@@ -459,6 +459,10 @@
         "days": {
           "name": "Tage",
           "description": "Wie viele vergangene Tage gelesen werden."
+        },
+        "forecast_power": {
+          "name": "Prognose-Leistung jetzt",
+          "description": "Optional: ein Sensor mit der Leistung der Basisprognose für den aktuellen Moment (Solcast: Leistung jetzt). Seine Stundenstatistik liefert die Prognose je Stunde: genauer, und die Kurve je Tageszeit wird gleich mitgelernt."
         }
       }
     }

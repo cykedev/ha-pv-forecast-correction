@@ -232,18 +232,30 @@ installation.
 
 A fresh install starts with a neutral level factor. To start with what Home Assistant has
 already recorded, call `pv_forecast_correction.learn_from_history` (default: the last 14
-days). Per day it takes
+days). Per day it takes the measured energy from the long-term statistics of the production
+inputs and, as the forecast:
 
-- the measured energy from the long-term statistics of the production inputs, and
-- the base forecast's day total as it stood before production began (its long-term
-  statistics, else its state history),
+- with `forecast_power`: the hourly statistics of a sensor that shows the base forecast's
+  power for the current moment (Solcast: *Power Now*, Forecast.Solar: *Estimated power
+  production - now*). That sensor always shows the value the base holds for the running
+  interval, so its hourly mean is the forecast of record per hour. This is exact and also
+  teaches the time-of-day curve. Recommended.
+- without it: the base forecast's day total as it stood before production began. It
+  overstates the forecast of record on days whose later hours were revised down before
+  they began (fog days), so the factor comes out somewhat low, and the curve is not
+  learned.
 
-skips days with gaps, and keeps days the integration measured itself. The day total at the
-start of production stands in for the forecast of record, which recorders do not keep; on
-real data the resulting factor differed from the exact value by about 1 %. Imported days are
-listed in the `imported_days` attribute of the level factor and age out like any other day.
-They teach the day factor only: recorders do not keep the forecast per hour, so the
-time-of-day curve learns from the days the integration measures itself.
+Days with gaps are skipped; days the integration measured itself are kept, days imported
+earlier are replaced. Imported days are listed in the `imported_days` attribute of the level
+factor and age out like any other day.
+
+```yaml
+action: pv_forecast_correction.learn_from_history
+data:
+  config_entry_id: <your entry>
+  days: 14
+  forecast_power: sensor.solcast_pv_forecast_power_now
+```
 
 ## Troubleshooting
 

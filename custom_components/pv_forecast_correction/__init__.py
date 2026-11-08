@@ -21,6 +21,7 @@ from .const import (
     ATTR_CLEAR_ARCHIVE,
     ATTR_CONFIG_ENTRY_ID,
     ATTR_DAYS,
+    ATTR_FORECAST_POWER,
     DOMAIN,
     SERVICE_EXPORT,
     SERVICE_LEARN_FROM_HISTORY,
@@ -36,7 +37,10 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 _ENTRY_SCHEMA = vol.Schema({vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string})
 _RESET_SCHEMA = _ENTRY_SCHEMA.extend({vol.Optional(ATTR_CLEAR_ARCHIVE, default=False): cv.boolean})
 _HISTORY_SCHEMA = _ENTRY_SCHEMA.extend(
-    {vol.Optional(ATTR_DAYS, default=14): vol.All(vol.Coerce(int), vol.Range(min=1, max=60))}
+    {
+        vol.Optional(ATTR_DAYS, default=14): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
+        vol.Optional(ATTR_FORECAST_POWER): cv.entity_id,
+    }
 )
 
 
@@ -71,7 +75,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             raise ServiceValidationError(
                 translation_domain=DOMAIN, translation_key="recorder_unavailable"
             )
-        return await coordinator.async_learn_from_history(call.data[ATTR_DAYS])
+        return await coordinator.async_learn_from_history(
+            call.data[ATTR_DAYS], call.data.get(ATTR_FORECAST_POWER)
+        )
 
     hass.services.async_register(DOMAIN, SERVICE_RESET, reset, schema=_RESET_SCHEMA)
     hass.services.async_register(

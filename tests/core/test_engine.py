@@ -8,7 +8,7 @@ from pvfc_core.archive import Snapshot
 from pvfc_core.engine import Corrector, Settings
 from pvfc_core.fog import FogGate, FogMode, FogReason, FogSettings
 from pvfc_core.forecast_format import Forecast, ForecastPoint, energy
-from pvfc_core.level import LevelSettings
+from pvfc_core.level import DayStats, LevelSettings
 from pvfc_core.replay import replay
 from pvfc_core.score import BASE, CORRECTED, SHADOW
 from pvfc_core.timeline import BIN, INTERVAL, day_bounds, local_time
@@ -352,12 +352,15 @@ def test_imported_days_teach_the_level_factor_at_once():
     assert engine.import_days(days, at(FIRST, 10)) == 4
     assert engine.level.days_used == 4
     assert engine.level.factor == pytest.approx((28 + 20) / (40 + 20))
-    # Measured days win unless asked otherwise.
-    assert engine.import_days([(FIRST - timedelta(days=1), 1.0, 10.0)], at(FIRST, 10)) == 0
-    assert (
-        engine.import_days([(FIRST - timedelta(days=1), 1.0, 10.0)], at(FIRST, 10), replace=True)
-        == 1
-    )
+    # A later import replaces imported days ...
+    yesterday = FIRST - timedelta(days=1)
+    hours = ((9, 1.0, 2.0), (12, 2.0, 3.0))
+    assert engine.import_days([(yesterday, 3.0, 5.0, hours)], at(FIRST, 10)) == 1
+    assert engine.history[yesterday].hours == hours
+    # ... but measured days win unless asked otherwise.
+    engine.history[yesterday] = DayStats(yesterday, 7.0, 10.0, 18, 0, 0)
+    assert engine.import_days([(yesterday, 1.0, 10.0)], at(FIRST, 10)) == 0
+    assert engine.import_days([(yesterday, 1.0, 10.0)], at(FIRST, 10), replace=True) == 1
     restored = Corrector.from_dict(engine.to_dict(), Settings(), TZ)
     assert restored.history[FIRST - timedelta(days=2)].imported
 

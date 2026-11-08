@@ -459,6 +459,10 @@
         "days": {
           "name": "Days",
           "description": "How many past days to read."
+        },
+        "forecast_power": {
+          "name": "Forecast power now",
+          "description": "Optional: a sensor that shows the base forecast's power for the current moment (Solcast: Power Now). Its hourly statistics give the forecast per hour: more exact, and the time-of-day curve can be learned at once."
         }
       }
     }
