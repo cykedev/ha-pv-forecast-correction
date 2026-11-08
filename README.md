@@ -110,8 +110,9 @@ works from the first day but says little until it has seen different kinds of da
 In **shadow** mode the layer is fetched, computed and shown (sensor *Weather factor*: factor
 per hour, today's rest and tomorrow with the weather factor, sunshine and fog probability)
 and scored every night as the `weather_*` columns of the error sensor, without changing the
-forecast. Every run is archived, so `tools/replay.py` can evaluate it later. Switch it on once
-that shows it helps.
+forecast. Every run is archived — with further MOSMIX elements such as the fog probability
+over 6 and 12 hours, visibility and cloud layers — so `tools/replay.py` can evaluate it and
+other rules later. Switch it on once that shows it helps.
 
 The data is DWD open data (free, no account). The integration downloads the station's latest
 run once an hour (about 40 kB, only when it changed) and the station catalogue once per
@@ -205,7 +206,7 @@ too: the integration follows the new ID.
 | `sensor.pv_forecast_correction_level_factor` | f (day factor) | `status`, `days_used`, `curve` (factor per hour), `sum_actual`, `sum_forecast`, `raw_ratio`, `shrink_weight`, `daily_ratios`, `imported_days`, `computed_at` |
 | `sensor.pv_forecast_correction_fog_factor` | k applied (1 when inactive) | `mode`, `reason`, `gate`, `k_shadow`, `k_morning`, `k_recent`, `base_confidence`, `active_since` |
 | `sensor.pv_forecast_correction_weather_factor` | weather factor for the coming hours of sun (rest of today; after sunset, tomorrow) | `mode`, `status`, `station`, `station_distance_km`, `issued_at`, `tomorrow_factor`, `rest_today_kwh`, `tomorrow_kwh`, `factors_today`, `factors_tomorrow`, `sunshine_*`, `fog_probability_*`, `days_learned`, `forecast_hours` (per hour of today and tomorrow: `period_start`, `pv_corrected` and `pv_estimate` in kW without and with the weather factor, `factor`, `sunshine_min`, `fog`, `low_cloud`; not recorded) |
-| `sensor.pv_forecast_correction_error_base` | yesterday's rest-of-day MAE of the base (kWh) | `rest_of_day` per time, `day_error`, `day_ahead_error`, `day_p10_held`, `day_p90_held`, `status` |
+| `sensor.pv_forecast_correction_error_base` | yesterday's rest-of-day MAE of the base (kWh) | `rest_of_day` per time, `day_error`, `day_ahead_error`, `day_p10_held`, `day_p90_held`, `day_ahead_p10_held`, `status` |
 | `sensor.pv_forecast_correction_error_corrected` | the same for the corrected forecast | as above, plus `shadow_*` / `weather_*` while the fog / weather layer is in shadow mode |
 | `sensor.pv_forecast_correction_error_with_weather` | the same for the corrected forecast with the weather factor | as *error base*; long-term statistics make the three comparable over weeks |
 | `sensor.pv_forecast_correction_base_age` | last refresh of the base forecast | `status`, `failures_today` |

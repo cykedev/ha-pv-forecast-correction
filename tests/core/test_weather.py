@@ -259,3 +259,47 @@ def test_todays_fog_factor_does_not_touch_tomorrow():
     assert sum(h.pv_corrected for h in tomorrow_hours) == pytest.approx(
         result.tomorrow.estimate, rel=1e-6
     )
+
+
+def test_further_elements_are_read_and_archived_but_not_kept_by_the_engine(tmp_path):
+    document = kml(
+        "2026-11-08T15:00:00.000Z",
+        ["2026-11-09T08:00:00.000Z"],
+        {"Rad1h": ["180.00"], "wwM6": ["70.0"], "VV": ["800.0"], "TTT": ["276.15"], "Td": ["-"]},
+    )
+    forecast = parse_mosmix(document, "X1234")
+    [point] = forecast.points
+    assert point.extra == (("wwM6", 70.0), ("VV", 800.0), ("TTT", 276.15))
+    archive = Archive(tmp_path / "a.db")
+    archive.open()
+    archive.add_weather(datetime(2026, 11, 8, 16, tzinfo=UTC), forecast)
+    [back] = archive.weather_snapshots()
+    assert dict(back.forecast.points[0].extra) == dict(point.extra)
+    archive.close()
+    engine = Corrector(SHADOW, TZ)
+    engine.set_weather(forecast, datetime(2026, 11, 8, 16, tzinfo=UTC))
+    assert engine.weather.points[0].extra == ()
+
+
+def test_archives_from_0_5_get_the_new_column(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE weather_snapshot (id INTEGER PRIMARY KEY, captured_at INTEGER NOT NULL,"
+        " issued_at INTEGER NOT NULL, station TEXT NOT NULL);"
+        "CREATE TABLE weather_value (snapshot_id INTEGER NOT NULL, hour_start INTEGER NOT NULL,"
+        " irradiance REAL, relative REAL, sunshine REAL, fog REAL, low_cloud REAL,"
+        " PRIMARY KEY (snapshot_id, hour_start)) WITHOUT ROWID;"
+        "INSERT INTO weather_snapshot VALUES (1, 1794150000, 1794146400, 'X1234');"
+        "INSERT INTO weather_value VALUES (1, 1794200000, 0.05, 20, 0.1, 60, 90);"
+    )
+    conn.commit()
+    conn.close()
+    archive = Archive(path)
+    archive.open()
+    [snapshot] = archive.weather_snapshots()
+    assert snapshot.forecast.points[0].fog == 60
+    assert snapshot.forecast.points[0].extra == ()
+    archive.close()

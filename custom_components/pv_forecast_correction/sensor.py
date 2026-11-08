@@ -199,6 +199,7 @@ def _variant_attributes(errors: VariantErrors, prefix: str) -> dict[str, Any]:
         f"{prefix}day_ahead_error": _round(errors.day_ahead),
         f"{prefix}day_p10_held": errors.day_p10_held,
         f"{prefix}day_p90_held": errors.day_p90_held,
+        f"{prefix}day_ahead_p10_held": errors.day_ahead_p10_held,
     }
 
 

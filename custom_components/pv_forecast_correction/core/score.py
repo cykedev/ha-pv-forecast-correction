@@ -18,6 +18,16 @@ DAY_AHEAD_CHECKPOINT = time(21)
 CAPTURE_WINDOW = timedelta(minutes=15)
 """A checkpoint is captured by the first update within this window after its time."""
 
+P10_QUANTILE = 0.1
+
+
+def pinball(actual: float, quantile_value: float, quantile: float = P10_QUANTILE) -> float:
+    """Pinball (quantile) loss of a forecast quantile against what happened."""
+    if actual >= quantile_value:
+        return (actual - quantile_value) * quantile
+    return (quantile_value - actual) * (1 - quantile)
+
+
 BASE = "base"
 CORRECTED = "corrected"
 SHADOW = "shadow"
@@ -95,6 +105,11 @@ class VariantErrors:
     rest: dict[str, float] = field(default_factory=dict)
     day_p10_held: bool | None = None
     day_p90_held: bool | None = None
+    day_ahead_p10_held: bool | None = None
+    day_p10_loss: float | None = None
+    """Pinball loss of the day's P10 as of 07:00 (kWh)."""
+    day_ahead_p10_loss: float | None = None
+    """Pinball loss of the day's P10 as of 21:00 the evening before (kWh)."""
 
     @property
     def rest_mae(self) -> float | None:
@@ -110,6 +125,9 @@ class VariantErrors:
             "rest": dict(self.rest),
             "day_p10_held": self.day_p10_held,
             "day_p90_held": self.day_p90_held,
+            "day_ahead_p10_held": self.day_ahead_p10_held,
+            "day_p10_loss": self.day_p10_loss,
+            "day_ahead_p10_loss": self.day_ahead_p10_loss,
         }
 
     @classmethod
@@ -120,6 +138,9 @@ class VariantErrors:
             rest={key: float(value) for key, value in data.get("rest", {}).items()},
             day_p10_held=data.get("day_p10_held"),
             day_p90_held=data.get("day_p90_held"),
+            day_ahead_p10_held=data.get("day_ahead_p10_held"),
+            day_p10_loss=data.get("day_p10_loss"),
+            day_ahead_p10_loss=data.get("day_ahead_p10_loss"),
         )
 
 
@@ -199,6 +220,15 @@ def build_report(
             day_p90_held=None
             if day_band is None or day_band.p90 is None
             else actual_kwh <= day_band.p90,
+            day_ahead_p10_held=None
+            if ahead_band is None or ahead_band.p10 is None
+            else actual_kwh >= ahead_band.p10,
+            day_p10_loss=None
+            if day_band is None or day_band.p10 is None
+            else pinball(actual_kwh, day_band.p10),
+            day_ahead_p10_loss=None
+            if ahead_band is None or ahead_band.p10 is None
+            else pinball(actual_kwh, ahead_band.p10),
         )
     base_day = checkpoints.day_total.get(BASE)
     confidence = None

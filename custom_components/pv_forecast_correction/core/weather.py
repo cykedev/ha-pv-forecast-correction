@@ -48,6 +48,10 @@ _ELEMENTS = {
     "wwM": "fog",
     "Nl": "low_cloud",
 }
+EXTRA_ELEMENTS = ("wwM6", "wwMh", "VV", "VV10", "N05", "Neff", "Nm", "Nh", "TTT", "Td")
+"""Further MOSMIX elements kept in the archive for later evaluation (fog over 6 and 12
+hours, visibility, cloud layers, temperature and dew point). The DWD keeps runs for two
+days only, so whatever is not archived is lost."""
 
 
 class WeatherError(ValueError):
@@ -96,6 +100,8 @@ class WeatherPoint:
     """Probability of fog, %."""
     low_cloud: float | None = None
     """Low cloud cover, %."""
+    extra: tuple[tuple[str, float], ...] = ()
+    """Further MOSMIX elements by name (archive only; values as published)."""
 
     def to_list(self) -> list[Any]:
         return [
@@ -193,6 +199,12 @@ def parse_mosmix(content: bytes, station: str) -> WeatherForecast:
     except ValueError as err:
         raise WeatherError(f"unreadable time in the MOSMIX document: {err}") from err
     columns: dict[str, list[float | None]] = {}
+    for element in EXTRA_ELEMENTS:
+        found = re.search(rf'dwd:elementName="{element}">\s*<dwd:value>([^<]*)</dwd:value>', text)
+        if found is not None:
+            values = [_number(v) for v in found.group(1).split()]
+            if len(values) == len(ends):
+                columns[element] = values
     for element, name in _ELEMENTS.items():
         found = re.search(rf'dwd:elementName="{element}">\s*<dwd:value>([^<]*)</dwd:value>', text)
         if found is None:
@@ -216,6 +228,11 @@ def parse_mosmix(content: bytes, station: str) -> WeatherForecast:
                 sunshine=None if sunshine is None else sunshine / 3600,
                 fog=row.get("fog"),
                 low_cloud=row.get("low_cloud"),
+                extra=tuple(
+                    (element, value)
+                    for element in EXTRA_ELEMENTS
+                    if (value := row.get(element)) is not None
+                ),
             )
         )
     return WeatherForecast(station=station, issued_at=issued_at, points=tuple(points))

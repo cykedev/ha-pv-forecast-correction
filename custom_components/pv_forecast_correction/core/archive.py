@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS weather_value (
     sunshine    REAL,
     fog         REAL,
     low_cloud   REAL,
+    extra       TEXT,
     PRIMARY KEY (snapshot_id, hour_start)
 ) WITHOUT ROWID;
 """
@@ -173,6 +174,9 @@ class Archive:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(actual)")}
             if "gap_s" not in columns:  # files written before the column existed
                 conn.execute("ALTER TABLE actual ADD COLUMN gap_s REAL NOT NULL DEFAULT 0")
+            weather_columns = {row[1] for row in conn.execute("PRAGMA table_info(weather_value)")}
+            if "extra" not in weather_columns:  # files written by 0.5.0 to 0.5.2
+                conn.execute("ALTER TABLE weather_value ADD COLUMN extra TEXT")
             row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
             if row is None:
                 conn.execute(
@@ -275,7 +279,7 @@ class Archive:
             snapshot_id = int(cursor.lastrowid or 0)
             conn.executemany(
                 "INSERT INTO weather_value (snapshot_id, hour_start, irradiance, relative,"
-                " sunshine, fog, low_cloud) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " sunshine, fog, low_cloud, extra) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         snapshot_id,
@@ -285,6 +289,7 @@ class Archive:
                         p.sunshine,
                         p.fog,
                         p.low_cloud,
+                        json.dumps(dict(p.extra)) if p.extra else None,
                     )
                     for p in forecast.points
                     if p.start < horizon
@@ -407,13 +412,20 @@ class Archive:
             (lo, hi),
         )
         values: dict[int, list[WeatherPoint]] = {}
-        for snapshot_id, hour, *rest in self._query(
+        for snapshot_id, hour, *rest, extra in self._query(
             "SELECT v.snapshot_id, v.hour_start, v.irradiance, v.relative, v.sunshine, v.fog,"
-            " v.low_cloud FROM weather_value v JOIN weather_snapshot s ON s.id = v.snapshot_id"
+            " v.low_cloud, v.extra FROM weather_value v"
+            " JOIN weather_snapshot s ON s.id = v.snapshot_id"
             " WHERE s.captured_at >= ? AND s.captured_at < ? ORDER BY v.hour_start",
             (lo, hi),
         ):
-            values.setdefault(snapshot_id, []).append(WeatherPoint(_dt(hour), *rest))
+            values.setdefault(snapshot_id, []).append(
+                WeatherPoint(
+                    _dt(hour),
+                    *rest,
+                    extra=tuple(sorted(json.loads(extra).items())) if extra else (),
+                )
+            )
         return [
             WeatherSnapshot(
                 _dt(captured),
@@ -520,9 +532,10 @@ class Archive:
                     "sunshine_h",
                     "fog_pct",
                     "low_cloud_pct",
+                    "further_elements",
                 ],
                 "SELECT s.captured_at, s.issued_at, s.station, v.hour_start, v.irradiance,"
-                " v.relative, v.sunshine, v.fog, v.low_cloud FROM weather_value v"
+                " v.relative, v.sunshine, v.fog, v.low_cloud, v.extra FROM weather_value v"
                 " JOIN weather_snapshot s ON s.id = v.snapshot_id"
                 " ORDER BY s.captured_at, s.id, v.hour_start",
                 (0, 1, 3),

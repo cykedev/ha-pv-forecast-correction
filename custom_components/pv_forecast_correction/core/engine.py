@@ -251,7 +251,10 @@ class Corrector:
             forecast.issued_at,
             forecast.station,
         ) != (self.weather.issued_at, self.weather.station)
-        self.weather = forecast
+        # The further elements are only archived; the engine does not keep them.
+        self.weather = replace_stats(
+            forecast, points=tuple(replace_stats(p, extra=()) for p in forecast.points)
+        )
         self.weather_valid = True
         self._refresh_weather_factors()
         return new

@@ -52,6 +52,19 @@ def test_build_report_signs_and_band_hits():
     assert errors.day_p10_held is True
     assert errors.day_p90_held is True
     assert errors.rest_mae is None
+    assert errors.day_p10_loss == pytest.approx((20.0 - 18.0) * 0.1)
+    assert errors.day_ahead_p10_held is None
+
+
+def test_p10_of_the_evening_before_is_scored_with_the_pinball_loss():
+    checkpoints = DayCheckpoints(day_ahead={BASE: Band(25.0, 22.0, 30.0)})
+    result = build_report(
+        DAY, checkpoints, 20.0, {}, complete=True, level_factor=1.0, fog_active=False
+    )
+    errors = result.variants[BASE]
+    assert errors.day_ahead_p10_held is False  # 20 kWh came, P10 said at least 22
+    assert errors.day_ahead_p10_loss == pytest.approx((22.0 - 20.0) * 0.9)
+    assert type(result).from_dict(result.to_dict()) == result
 
 
 def test_summary_and_criteria():

@@ -441,6 +441,9 @@
           },
           "day_p90_held": {
             "name": "Tag höchstens P90"
+          },
+          "day_ahead_p10_held": {
+            "name": "Tag über P10 vom Vorabend"
           }
         }
       },
@@ -520,6 +523,12 @@
           },
           "weather_day_p90_held": {
             "name": "Wetter: Tag unter P90"
+          },
+          "day_ahead_p10_held": {
+            "name": "Tag über P10 vom Vorabend"
+          },
+          "weather_day_ahead_p10_held": {
+            "name": "Wetter: Tag über P10 vom Vorabend"
           }
         }
       },
@@ -558,6 +567,9 @@
           },
           "day_p90_held": {
             "name": "Tag höchstens P90"
+          },
+          "day_ahead_p10_held": {
+            "name": "Tag über P10 vom Vorabend"
           }
         }
       },

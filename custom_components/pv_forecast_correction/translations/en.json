@@ -441,6 +441,9 @@
           },
           "day_p90_held": {
             "name": "Day at or below P90"
+          },
+          "day_ahead_p10_held": {
+            "name": "Day above P10 of the evening before"
           }
         }
       },
@@ -520,6 +523,12 @@
           },
           "weather_day_p90_held": {
             "name": "Weather: day below P90"
+          },
+          "day_ahead_p10_held": {
+            "name": "Day above P10 of the evening before"
+          },
+          "weather_day_ahead_p10_held": {
+            "name": "Weather: day above P10 of the evening before"
           }
         }
       },
@@ -558,6 +567,9 @@
           },
           "day_p90_held": {
             "name": "Day at or below P90"
+          },
+          "day_ahead_p10_held": {
+            "name": "Day above P10 of the evening before"
           }
         }
       },
