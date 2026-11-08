@@ -112,7 +112,9 @@ per hour, today's rest and tomorrow with the weather factor, sunshine and fog pr
 and scored every night as the `weather_*` columns of the error sensor, without changing the
 forecast. Every run is archived — with further MOSMIX elements such as the fog probability
 over 6 and 12 hours, visibility and cloud layers — so `tools/replay.py` can evaluate it and
-other rules later. Switch it on once that shows it helps.
+other rules later. Switch it on once that shows it helps. While the fog layer is on, the
+weather variant is scored with a fog layer of its own that compares against the forecast with
+the weather factor, as it would run if the weather layer were on.
 
 The data is DWD open data (free, no account). The integration downloads the station's latest
 run once an hour (about 40 kB, only when it changed) and the station catalogue once per

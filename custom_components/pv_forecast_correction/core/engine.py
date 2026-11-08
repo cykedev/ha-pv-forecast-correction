@@ -208,7 +208,10 @@ class Corrector:
         self.weather_record: dict[datetime, WeatherPoint] = {}
         """MOSMIX values as they stood when each hour began."""
         self.weather_factor_record: dict[datetime, float] = {}
-        """Weather factor in effect when each hour began."""
+        """Weather factor (applied or not) as it stood when each hour began."""
+        self.fog_weather = FogState(reason=self._initial_fog_reason())
+        """The fog layer as it would run if the weather factor were applied (scores the
+        weather variant in shadow mode without counting fog twice)."""
         self.weather_typical = WeatherTypical()
         self._weather_factors: dict[datetime, float] = {}
         self._weather_typical_used = WeatherTypical()
@@ -487,6 +490,7 @@ class Corrector:
         self.history = {d: s for d, s in self.history.items() if d >= cutoff}
         self._compute_level(now)
         self.fog = FogState(reason=self._initial_fog_reason())
+        self.fog_weather = FogState(reason=self._initial_fog_reason())
         self.checkpoints = DayCheckpoints()
         if self.next_day_ahead is not None:
             target, bands = self.next_day_ahead
@@ -511,7 +515,7 @@ class Corrector:
                     self.weather_record.setdefault(weather_point.start, weather_point)
             for hour in steps(floor_to(start, HOUR), min(now, end), HOUR):
                 if hour >= start - HOUR / 2:
-                    self.weather_factor_record.setdefault(hour, self.weather_applied(hour))
+                    self.weather_factor_record.setdefault(hour, self.weather_at(hour))
 
     def _day_stats(self, day: date) -> DayStats:
         start, end = day_bounds(day, self.tz)
@@ -536,7 +540,9 @@ class Corrector:
             merged.setdefault(point.start, point)
         return [merged[s] for s in sorted(merged) if start <= s < end]
 
-    def _fog_inputs(self, now: datetime) -> FogInputs:
+    def _fog_inputs(self, now: datetime, *, with_weather: bool) -> FogInputs:
+        """What the fog layer compares: measured against the forecast of record, which
+        includes the weather factor when ``with_weather``."""
         assert self.day is not None
         start, end = day_bounds(self.day, self.tz)
         horizon = self.measured_until(now)
@@ -554,24 +560,22 @@ class Corrector:
             measured = self.bins.interval(interval)
             if not measured.measured or measured.curtailed:
                 continue
-            expected = (
-                self.level_at(interval)
-                * self.weather_factor_record.get(floor_to(interval, HOUR), 1.0)
-                * point.p50
-                * INTERVAL_HOURS
+            weather = (
+                self.weather_factor_record.get(floor_to(interval, HOUR), 1.0)
+                if with_weather
+                else 1.0
             )
+            expected = self.level_at(interval) * weather * point.p50 * INTERVAL_HOURS
             expected_morning += expected
             actual_morning += measured.energy_kwh
             if interval >= recent_start:
                 expected_recent += expected
                 actual_recent += measured.energy_kwh
-        expected_day = (
-            energy(
-                p.scaled(self.level_at(p.start) * self.weather_applied(p.start))
-                for p in self._today_points()
-            )
-            or 0.0
-        )
+
+        def scale(start: datetime) -> float:
+            return self.level_at(start) * (self.weather_at(start) if with_weather else 1.0)
+
+        expected_day = energy(p.scaled(scale(p.start)) for p in self._today_points()) or 0.0
         today_base = self.base.between(start, end)
         confidence = None
         base_p50 = energy(today_base) or 0.0
@@ -589,9 +593,24 @@ class Corrector:
 
     def _update_fog(self, now: datetime) -> None:
         if self.settings.fog.mode is FogMode.OFF:
-            self.fog = FogState(reason=FogReason.DISABLED)
+            self.fog = self.fog_weather = FogState(reason=FogReason.DISABLED)
             return
-        self.fog = evaluate(self.fog, self._fog_inputs(now), self.settings.fog, now)
+        applied = self.settings.weather.mode is WeatherMode.ON
+        self.fog = evaluate(
+            self.fog, self._fog_inputs(now, with_weather=applied), self.settings.fog, now
+        )
+        if self._weather_in_shadow:
+            self.fog_weather = evaluate(
+                self.fog_weather, self._fog_inputs(now, with_weather=True), self.settings.fog, now
+            )
+
+    @property
+    def _fog_with_weather(self) -> float:
+        """Fog factor the published forecast carries (or would carry, in shadow mode) with
+        the weather factor applied."""
+        if self.settings.weather.mode is WeatherMode.ON:
+            return self.fog_applied  # the published fog layer already runs with it
+        return self.fog_weather.k if self.settings.fog.mode is FogMode.ON else 1.0
 
     # ------------------------------------------------------------------ checkpoints
 
@@ -632,7 +651,7 @@ class Corrector:
             bands[SHADOW] = corrected.scaled(shadow, measured)
         if self._weather_in_shadow:
             with_weather = self._base_band(points, start, end, self._weather_scale)
-            bands[WEATHER] = with_weather.scaled(self.fog_applied, measured)
+            bands[WEATHER] = with_weather.scaled(self._fog_with_weather, measured)
         return bands
 
     def _corrected_scale(self, start: datetime) -> float:
@@ -852,22 +871,23 @@ class Corrector:
             return status
         weather = {} if self.weather is None else self.weather.as_dict()
 
-        def summary(
-            points: list[ForecastPoint], start: datetime, fog_factor: float
-        ) -> tuple[Any, ...]:
-            plain = with_weather = 0.0
+        def summary(points: list[ForecastPoint], start: datetime, today: bool) -> tuple[Any, ...]:
+            plain = weighted = with_weather = 0.0
             hours: dict[str, float] = {}
+            fog_weather = self._fog_with_weather if today else 1.0
             for point in points:
                 end = point.start + INTERVAL
                 hours_left = max(0.0, (end - max(start, point.start)).total_seconds()) / 3600
-                scale = self.level_at(point.start) * fog_factor
-                plain += point.p50 * scale * hours_left
-                with_weather += point.p50 * scale * self.weather_at(point.start) * hours_left
+                level = self.level_at(point.start) * point.p50 * hours_left
+                plain += level
+                weighted += level * self.weather_at(point.start)
+                with_weather += level * fog_weather * self.weather_at(point.start)
                 hour = floor_to(point.start, HOUR)
                 if hour in self._weather_factors:
                     label = f"{local_hour(hour, self.tz):02d}:00"
                     hours[label] = round(self._weather_factors[hour], 3)
-            factor = with_weather / plain if plain > 0 else None
+            # The weather factor alone (energy-weighted); the estimate includes the fog layer.
+            factor = weighted / plain if plain > 0 else None
             hour_starts = {floor_to(p.start, HOUR) for p in points}
             sunshine = [weather[h].sunshine for h in hour_starts if h in weather]
             fog = [weather[h].fog for h in hour_starts if h in weather]
@@ -881,19 +901,20 @@ class Corrector:
 
         rest = [p for p in today_base if p.start + INTERVAL > now]
         start = max(now, rest[0].start) if rest else now
-        r_factor, r_estimate, _, r_sun, r_fog = summary(rest, start, self.fog_applied)
+        r_factor, r_estimate, _, r_sun, r_fog = summary(rest, start, True)
         t_start = tomorrow_base[0].start if tomorrow_base else now
-        t_factor, t_estimate, t_hours, t_sun, t_fog = summary(tomorrow_base, t_start, 1.0)
-        today_hours = (
-            summary(today_base, today_base[0].start, self.fog_applied)[2] if today_base else {}
-        )
+        t_factor, t_estimate, t_hours, t_sun, t_fog = summary(tomorrow_base, t_start, False)
+        today_hours = summary(today_base, today_base[0].start, True)[2] if today_base else {}
         hourly: dict[datetime, list[float]] = {}
-        for points, fog_factor in ((today_base, self.fog_applied), (tomorrow_base, 1.0)):
+        for points, fog_plain, fog_weather in (
+            (today_base, self.fog_applied, self._fog_with_weather),
+            (tomorrow_base, 1.0, 1.0),
+        ):
             for point in points:
-                kwh = point.p50 * self.level_at(point.start) * fog_factor * INTERVAL_HOURS
+                kwh = point.p50 * self.level_at(point.start) * INTERVAL_HOURS
                 sums = hourly.setdefault(floor_to(point.start, HOUR), [0.0, 0.0])
-                sums[0] += kwh
-                sums[1] += kwh * self.weather_at(point.start)
+                sums[0] += kwh * fog_plain
+                sums[1] += kwh * fog_weather * self.weather_at(point.start)
         hours = tuple(
             WeatherHour(
                 start=hour,
@@ -942,6 +963,8 @@ class Corrector:
             "history": [self.history[d].to_dict() for d in sorted(self.history)],
             "level": self.level.to_dict(),
             "fog": self.fog.to_dict(),
+            "fog_weather": self.fog_weather.to_dict(),
+            "weather_mode": self.settings.weather.mode.value,
             "checkpoints": self.checkpoints.to_dict(),
             "next_day_ahead": None
             if self.next_day_ahead is None
@@ -992,6 +1015,18 @@ class Corrector:
             engine.fog = FogState.from_dict(data["fog"])
             if settings.fog.mode is FogMode.OFF:
                 engine.fog = FogState(reason=FogReason.DISABLED)
+        if data.get("fog_weather") and settings.fog.mode is not FogMode.OFF:
+            engine.fog_weather = FogState.from_dict(data["fog_weather"])
+        previous_mode = data.get("weather_mode")
+        if settings.fog.mode is not FogMode.OFF and previous_mode != settings.weather.mode.value:
+            if settings.weather.mode is WeatherMode.ON and previous_mode == WeatherMode.SHADOW:
+                # Switched on: the fog layer continues as it ran with the weather factor.
+                engine.fog = engine.fog_weather
+            elif previous_mode == WeatherMode.ON:
+                # Switched off or to shadow: the weather world is the old published one; the
+                # published fog layer starts again from today's measurements.
+                engine.fog_weather = engine.fog
+                engine.fog = FogState(reason=engine._initial_fog_reason())
         engine.checkpoints = DayCheckpoints.from_dict(data.get("checkpoints", {}))
         if data.get("next_day_ahead"):
             target, bands = data["next_day_ahead"]
@@ -1027,4 +1062,10 @@ class Corrector:
         if data.get("weather_typical"):
             engine.weather_typical = WeatherTypical.from_dict(data["weather_typical"])
         engine._refresh_weather_factors()
+        if "fog_weather" not in data:
+            # State of 0.5.2 or earlier recorded the applied factor (1.0 in shadow mode); take
+            # today's factors as they stand now instead.
+            engine.weather_factor_record = {
+                hour: engine.weather_at(hour) for hour in engine.weather_factor_record
+            }
         return engine

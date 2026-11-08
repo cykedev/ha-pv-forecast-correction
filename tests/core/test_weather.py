@@ -261,6 +261,36 @@ def test_todays_fog_factor_does_not_touch_tomorrow():
     )
 
 
+def test_the_weather_variant_does_not_count_fog_twice():
+    """With the fog layer on, the weather variant must be scored as it would run with the
+    weather factor applied: the fog layer then compares against the already lowered
+    forecast instead of multiplying its own factor on top."""
+    from pvfc_core.fog import FogMode, FogSettings
+
+    days = day_range(FIRST, 12)
+    dull = FIRST + timedelta(days=10)
+    ratio = lambda d: 0.4 if d == dull else 1.0  # noqa: E731
+    points = [p for day in days for p in curve(day)]
+    settings = Settings(
+        fog=FogSettings(mode=FogMode.ON),
+        weather=WeatherSettings(mode=WeatherMode.SHADOW, trust=1.0),
+    )
+    result = replay(
+        daily_snapshots(days),
+        bins_from(points, lambda start: 0.4 if start.astimezone(TZ).date() == dull else 1.0),
+        settings,
+        TZ,
+        weather=weather_runs(days, ratio),
+    )
+    report = result.reports[dull]
+    assert report.fog_active  # the published forecast needed the fog layer
+    weather = report.variants[WEATHER]
+    actual = report.actual_rest
+    # Counted twice, the rest of the day would come out at about 0.4 x 0.4 of the forecast.
+    for key, error in weather.rest.items():
+        assert abs(error) < 0.15 * actual[key] + 0.05, (key, error, actual[key])
+
+
 def test_further_elements_are_read_and_archived_but_not_kept_by_the_engine(tmp_path):
     document = kml(
         "2026-11-08T15:00:00.000Z",
@@ -303,3 +333,84 @@ def test_archives_from_0_5_get_the_new_column(tmp_path):
     assert snapshot.forecast.points[0].fog == 60
     assert snapshot.forecast.points[0].extra == ()
     archive.close()
+
+
+def _learned(engine: Corrector, settings: Settings, ratio: float) -> None:
+    """Teach the typical ratio so that the current MOSMIX run reads as ``ratio`` x usual."""
+    engine.weather_typical = typical_ratio(
+        [(FIRST - timedelta(days=1), ((h, 0.1 / ratio, 1.0) for h in range(24)))], settings.weather
+    )
+
+
+def test_with_the_weather_layer_on_its_sensor_matches_the_published_forecast():
+    from dataclasses import replace
+
+    from pvfc_core.fog import FogMode, FogSettings
+
+    settings = Settings(
+        fog=FogSettings(mode=FogMode.ON),
+        weather=WeatherSettings(mode=WeatherMode.ON, trust=1.0),
+    )
+    engine, _ = run_live(settings, 1.0)
+    _learned(engine, settings, 1.0)
+    now = day_bounds(FIRST, TZ)[0] + timedelta(hours=11)
+    engine.update(now)
+    engine.fog = replace(engine.fog, k=0.4, active_since=now)
+    result = engine.result(now)
+    assert result.weather.rest_estimate == pytest.approx(result.remaining.estimate, rel=1e-6)
+    assert result.weather.rest_factor == pytest.approx(1.0, abs=0.01)
+
+
+def test_in_shadow_the_sensor_state_is_the_weather_factor_alone():
+    from dataclasses import replace
+
+    from pvfc_core.fog import FogMode, FogSettings
+
+    settings = Settings(
+        fog=FogSettings(mode=FogMode.ON),
+        weather=WeatherSettings(mode=WeatherMode.SHADOW, trust=1.0),
+    )
+    engine, _ = run_live(settings, 1.0)
+    _learned(engine, settings, 0.5)
+    now = day_bounds(FIRST, TZ)[0] + timedelta(hours=11)
+    engine.update(now)
+    engine.fog = replace(engine.fog, k=0.4, active_since=now)
+    engine.fog_weather = replace(engine.fog_weather, k=0.8, active_since=now)
+    result = engine.result(now)
+    assert result.weather.rest_factor == pytest.approx(0.5, abs=0.01)
+    # The estimate with weather carries the fog layer of the weather world.
+    plain = result.remaining.estimate / 0.4
+    assert result.weather.rest_estimate == pytest.approx(plain * 0.5 * 0.8, rel=0.02)
+
+
+def test_state_from_before_0_5_3_rebuilds_todays_weather_factors():
+    settings = SHADOW
+    engine, _ = run_live(settings, 1.0)
+    _learned(engine, settings, 0.5)
+    engine.update(day_bounds(FIRST, TZ)[0] + timedelta(hours=9))
+    data = engine.to_dict()
+    del data["fog_weather"]
+    data["weather_factor_record"] = [[s, 1.0] for s, _ in data["weather_factor_record"]]
+    restored = Corrector.from_dict(data, settings, TZ)
+    assert restored.weather_factor_record
+    for hour, factor in restored.weather_factor_record.items():
+        assert factor == restored.weather_at(hour)
+
+
+def test_switching_the_weather_layer_on_continues_its_fog_state():
+    from dataclasses import replace
+
+    from pvfc_core.fog import FogMode, FogSettings
+
+    shadow = Settings(
+        fog=FogSettings(mode=FogMode.ON),
+        weather=WeatherSettings(mode=WeatherMode.SHADOW, trust=1.0),
+    )
+    engine, _ = run_live(shadow, 1.0)
+    now = day_bounds(FIRST, TZ)[0] + timedelta(hours=11)
+    engine.fog = replace(engine.fog, k=0.4, active_since=now)
+    engine.fog_weather = replace(engine.fog_weather, k=0.9)
+    on = replace(shadow, weather=replace(shadow.weather, mode=WeatherMode.ON))
+    restored = Corrector.from_dict(engine.to_dict(), on, TZ)
+    assert restored.fog.k == 0.9
+    assert not restored.fog.active
