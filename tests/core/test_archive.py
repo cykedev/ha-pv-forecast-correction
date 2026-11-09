@@ -1,5 +1,6 @@
 """SQLite archive: write, read back, prune, export."""
 
+from dataclasses import replace
 from datetime import date, timedelta
 
 import pytest
@@ -59,7 +60,9 @@ def test_day_reports_and_corrections(archive, tmp_path):
         "weather.csv",
         "day_report.csv",
     }
-    assert "level_factor" in (tmp_path / "export" / "correction.csv").read_text()
+    header = (tmp_path / "export" / "correction.csv").read_text().splitlines()[0]
+    assert "level_factor" in header
+    assert {"k_hour", "rest_factor", "fog_used"} <= set(header.split(","))
 
 
 def test_prune_and_clear(archive):
@@ -89,14 +92,27 @@ def test_older_files_get_new_columns(tmp_path):
         " covered_s REAL NOT NULL, curtailed INTEGER NOT NULL)"
     )
     conn.execute("INSERT INTO actual VALUES (0, 1.0, 300, 0)")
+    conn.execute(
+        "CREATE TABLE correction (ts INTEGER PRIMARY KEY, level_factor REAL NOT NULL,"
+        " fog_applied REAL NOT NULL, fog_shadow REAL, k_morning REAL, k_recent REAL,"
+        " fog_reason TEXT, today_kwh REAL, remaining_kwh REAL, tomorrow_kwh REAL)"
+    )
     conn.commit()
     conn.close()
     store = Archive(path)
     store.open()
     [item] = store.bins()
+    start, _ = day_bounds(DAY, TZ)
+    row = CorrectionRow(start, 0.8, 0.5, None, 0.5, 0.4, "active", 10.0, 5.0, 12.0)
+    store.add_correction(replace(row, k_hour=0.45, rest_factor=0.6, fog_used=True))
     store.close()
     assert item.gap_s == 0.0
     assert item.energy_kwh == 1.0
+    conn = sqlite3.connect(path)
+    assert conn.execute("SELECT k_hour, rest_factor, fog_used FROM correction").fetchall() == [
+        (0.45, 0.6, 1)
+    ]
+    conn.close()
 
 
 def test_stats_summarise_the_tables(archive):

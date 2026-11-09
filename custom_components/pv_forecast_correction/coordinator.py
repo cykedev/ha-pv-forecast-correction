@@ -531,6 +531,9 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
                     today_kwh=None if result.today is None else result.today.estimate,
                     remaining_kwh=None if result.remaining is None else result.remaining.estimate,
                     tomorrow_kwh=None if result.tomorrow is None else result.tomorrow.estimate,
+                    k_hour=fog.k_hour,
+                    rest_factor=fog.rest_factor,
+                    fog_used=fog.fog_used,
                 ),
             )
         report = self.engine.report

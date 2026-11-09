@@ -21,6 +21,7 @@ from custom_components.pv_forecast_correction.const import (
     CONF_FOG_CONFIDENCE,
     CONF_FOG_MIN_FACTOR,
     CONF_FOG_MODE,
+    CONF_FOG_PART,
     CONF_FOG_RECENT_HOURS,
     CONF_FOG_THRESHOLD,
     CONF_FORECAST_TODAY,
@@ -31,6 +32,7 @@ from custom_components.pv_forecast_correction.const import (
     CONF_LEVEL_MAX,
     CONF_LEVEL_MIN,
     CONF_LEVEL_SHRINK_DAYS,
+    CONF_SHORT_TERM,
     CONF_WEATHER_MODE,
     CONF_WEATHER_STATION,
     CONF_WEATHER_TRUST,
@@ -155,6 +157,8 @@ def options_input(**changes: Any) -> dict[str, Any]:
         },
         "fog": {
             CONF_FOG_MODE: "on",
+            CONF_SHORT_TERM: False,
+            CONF_FOG_PART: "always",
             CONF_FOG_THRESHOLD: 0.6,
             CONF_FOG_CONFIDENCE: 0.0,
             CONF_FOG_RECENT_HOURS: 1.5,
@@ -197,6 +201,8 @@ async def test_options_change_inputs_and_settings(
     assert coordinator.settings.level.by_time is False
     assert coordinator.settings.fog.mode.value == "on"
     assert coordinator.settings.fog.gate.min_confidence is None
+    assert not coordinator.settings.intraday.enabled
+    assert coordinator.settings.intraday.fog_part.value == "always"
     assert coordinator.settings.weather.trust == 0.7
     assert coordinator.archive is None
     fog = hass.states.get("sensor.pv_forecast_correction_fog_factor")

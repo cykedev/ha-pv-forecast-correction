@@ -81,7 +81,9 @@ async def test_days_are_learned_scored_and_archived(
     assert set(base.attributes["rest_of_day"]) == {f"{h:02d}:00" for h in range(9, 15)}
     # Tomorrow's forecast was frozen at 21:00 on the first day, when nothing was learned yet.
     assert corrected.attributes["day_ahead_error"] == base.attributes["day_ahead_error"]
-    assert corrected.attributes["shadow_rest_of_day_mae"] == float(corrected.state)
+    # Layer B runs in shadow by default: its short-term part follows the measured ratio during
+    # the day, which the level factor (still learning) has not reached yet.
+    assert corrected.attributes["shadow_rest_of_day_mae"] < float(corrected.state)
 
     today = hass.states.get("sensor.pv_forecast_correction_today")
     assert today.attributes["level_factor"] == pytest.approx(float(level.state), abs=1e-3)

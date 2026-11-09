@@ -80,10 +80,12 @@
             }
           },
           "fog": {
-            "name": "Nebel-Schicht",
-            "description": "An Tagen, an denen ein ganzer Vormittag weit unter einer sicheren Prognose liegt (Nebel, Hochnebel), wird der Rest des Tages mit dem gemessenen Verhältnis abgesenkt. Im Schattenbetrieb wird das nur berechnet und angezeigt, die Prognose bleibt unverändert.",
+            "name": "Laufende Korrektur",
+            "description": "Folgt dem, was im Lauf des Tages gemessen wird. Der Kurzfrist-Teil trägt das Verhältnis aus gemessener und erwarteter Energie der letzten Stunde in die nächsten Stunden und lässt es innerhalb etwa einer Stunde ausklingen, damit die nächsten Stunden der Wirklichkeit folgen. Die Nebel-Schicht senkt den Rest des Tages mit dem Verhältnis seit dem Morgen ab, sobald ein ganzer Vormittag weit unter der Prognose lag (Nebel, Hochnebel); ob sie das darf, wird jede Nacht aus den letzten 14 Tagen entschieden (automatisch), weil Nebel anhält, trübe Sommermorgen dagegen meist aufklaren. Im Schattenbetrieb wird das alles berechnet, angezeigt und bewertet, die Prognose bleibt unverändert.",
             "data": {
               "fog_mode": "Betrieb",
+              "short_term": "Kurzfrist-Teil",
+              "fog_part": "Nebel-Schicht verwenden",
               "fog_threshold": "Schwelle",
               "fog_min_confidence": "Mindest-Sicherheit der Prognose",
               "fog_recent_hours": "Letztes Zeitfenster",
@@ -91,6 +93,8 @@
             },
             "data_description": {
               "fog_mode": "Aus, Schatten (nur berechnen und anzeigen) oder an (anwenden).",
+              "short_term": "Das Verhältnis gemessen/erwartet der letzten Stunde in die nächsten Stunden tragen (klingt innerhalb etwa einer Stunde aus).",
+              "fog_part": "Automatisch: nur wenn sie in den letzten 14 Tagen deutlich besser war als der Kurzfrist-Teil allein (braucht mindestens 7 Tage). Immer oder nie übersteuern das.",
               "fog_threshold": "Die Schicht greift, wenn seit dem Morgen und im letzten Zeitfenster jeweils weniger als dieser Anteil der Prognose erzeugt wurde.",
               "fog_min_confidence": "Verlangt zusätzlich, dass P10 ÷ P50 der Basisprognose für den Tag mindestens so hoch ist (eine enge, sichere Prognose). 0 schaltet diese Bedingung ab.",
               "fog_recent_hours": "Länge des letzten Zeitfensters.",
@@ -154,6 +158,13 @@
         "shadow": "Schatten (nur berechnen und anzeigen)",
         "on": "An (anwenden)"
       }
+    },
+    "fog_part": {
+      "options": {
+        "auto": "Automatisch (jede Nacht entschieden)",
+        "always": "Immer",
+        "never": "Nie"
+      }
     }
   },
   "entity": {
@@ -187,6 +198,9 @@
           },
           "fog_factor": {
             "name": "Nebel-Faktor"
+          },
+          "intraday_factor": {
+            "name": "Faktor Schicht B auf den Rest des Tages"
           }
         }
       },
@@ -330,6 +344,36 @@
           },
           "active_since": {
             "name": "Aktiv seit"
+          },
+          "fog_used": {
+            "name": "Nebel-Schicht heute erlaubt"
+          },
+          "short_term": {
+            "name": "Kurzfrist-Teil",
+            "state": {
+              "disabled": "Aus",
+              "waiting": "Wartet auf genug erwartete Energie",
+              "nothing_measured": "In der letzten Stunde nichts gemessen",
+              "active": "Aktiv"
+            }
+          },
+          "k_hour": {
+            "name": "Verhältnis letzte Stunde"
+          },
+          "next_hour_factor": {
+            "name": "Faktor nächste Stunde"
+          },
+          "rest_factor": {
+            "name": "Faktor Rest des Tages"
+          },
+          "tuning_days": {
+            "name": "Tage hinter der nächtlichen Wahl"
+          },
+          "tuning_error_short_term": {
+            "name": "Fehler nur Kurzfrist-Teil (kWh)"
+          },
+          "tuning_error_with_fog": {
+            "name": "Fehler mit Nebel-Schicht (kWh)"
           }
         }
       },

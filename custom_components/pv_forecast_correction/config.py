@@ -15,6 +15,7 @@ from .const import (
     CONF_FOG_CONFIDENCE,
     CONF_FOG_MIN_FACTOR,
     CONF_FOG_MODE,
+    CONF_FOG_PART,
     CONF_FOG_RECENT_HOURS,
     CONF_FOG_THRESHOLD,
     CONF_FORECAST_TODAY,
@@ -25,16 +26,19 @@ from .const import (
     CONF_LEVEL_MAX,
     CONF_LEVEL_MIN,
     CONF_LEVEL_SHRINK_DAYS,
+    CONF_SHORT_TERM,
     CONF_WEATHER_MODE,
     CONF_WEATHER_STATION,
     CONF_WEATHER_TRUST,
     DEFAULT_ARCHIVE_RETENTION_DAYS,
 )
 from .core import FogGate, FogMode, FogSettings, LevelSettings, Settings
+from .core.intraday import FogPart, IntradaySettings
 from .core.weather import STATION_PATTERN, WeatherMode, WeatherSettings
 
 _LEVEL = LevelSettings()
 _FOG = FogSettings()
+_INTRADAY = IntradaySettings()
 _WEATHER = WeatherSettings()
 
 DEFAULTS: dict[str, Any] = {
@@ -49,6 +53,8 @@ DEFAULTS: dict[str, Any] = {
     CONF_FOG_CONFIDENCE: _FOG.gate.min_confidence,
     CONF_FOG_RECENT_HOURS: _FOG.recent_hours,
     CONF_FOG_MIN_FACTOR: _FOG.min_factor,
+    CONF_SHORT_TERM: _INTRADAY.enabled,
+    CONF_FOG_PART: _INTRADAY.fog_part.value,
     CONF_WEATHER_MODE: _WEATHER.mode.value,
     CONF_WEATHER_STATION: "",
     CONF_WEATHER_TRUST: _WEATHER.trust,
@@ -126,6 +132,12 @@ def settings_from(config: Mapping[str, Any]) -> Settings:
     except (KeyError, TypeError, ValueError):
         fog = FogSettings()
     try:
+        intraday = IntradaySettings(
+            enabled=bool(config[CONF_SHORT_TERM]), fog_part=FogPart(config[CONF_FOG_PART])
+        )
+    except (KeyError, TypeError, ValueError):
+        intraday = IntradaySettings()
+    try:
         weather = WeatherSettings(
             mode=WeatherMode(config[CONF_WEATHER_MODE]),
             station=weather_station(config),
@@ -134,7 +146,11 @@ def settings_from(config: Mapping[str, Any]) -> Settings:
     except (KeyError, TypeError, ValueError):
         weather = WeatherSettings()
     return Settings(
-        level_enabled=bool(config[CONF_LEVEL_ENABLED]), level=level, fog=fog, weather=weather
+        level_enabled=bool(config[CONF_LEVEL_ENABLED]),
+        level=level,
+        fog=fog,
+        weather=weather,
+        intraday=intraday,
     )
 
 
@@ -149,4 +165,5 @@ def settings_dict(settings: Settings) -> dict[str, Any]:
     data = asdict(settings)
     data["fog"]["mode"] = settings.fog.mode.value
     data["weather"]["mode"] = settings.weather.mode.value
+    data["intraday"]["fog_part"] = settings.intraday.fog_part.value
     return data

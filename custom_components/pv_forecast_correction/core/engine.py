@@ -7,7 +7,7 @@ Typical cycle (every few minutes):
     engine.set_base(forecast, now)          # when the base forecast entities change
     engine.observe_energy(now, kwh)         # or observe_power / set_bin
     engine.observe_curtailment(now, on)
-    engine.update(now)                      # day roll-over, forecast of record, fog layer
+    engine.update(now)                      # day roll-over, forecast of record, layer B
     result = engine.result(now)             # corrected forecast for the sensors
 """
 
@@ -22,6 +22,15 @@ from typing import Any
 from .actuals import BinStore, CurtailmentTracker, EnergyMeter, IntervalActual, PowerMeter
 from .fog import FogInputs, FogMode, FogReason, FogSettings, FogState, evaluate
 from .forecast_format import Forecast, ForecastPoint, energy
+from .intraday import (
+    IntradaySettings,
+    ShortTermReason,
+    Tuning,
+    TuningDay,
+    fog_allowed,
+    multiplier,
+    tune,
+)
 from .level import DayStats, LevelFactor, LevelSettings, compute_level_factor, day_stats
 from .score import (
     BASE,
@@ -80,6 +89,7 @@ class Settings:
     level: LevelSettings = field(default_factory=LevelSettings)
     fog: FogSettings = field(default_factory=FogSettings)
     weather: WeatherSettings = field(default_factory=WeatherSettings)
+    intraday: IntradaySettings = field(default_factory=IntradaySettings)
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,13 +119,24 @@ class DayForecast:
 
 @dataclass(frozen=True, slots=True)
 class FogStatus:
-    """Fog layer as published."""
+    """Layer B (fog layer and short-term part) as published."""
 
     mode: FogMode
     gate: str
     applied: float
+    """Fog factor applied to the rest of today (1.0 when the fog layer may not be used)."""
     shadow: float | None
     state: FogState
+    k_hour: float | None = None
+    """Measured over expected energy in the last hour (short-term part)."""
+    short_term: ShortTermReason = ShortTermReason.DISABLED
+    fog_used: bool = True
+    """The fog layer may carry the rest of today (nightly choice or setting)."""
+    tuning: Tuning = field(default_factory=Tuning)
+    next_hour_factor: float | None = None
+    """Layer B factor on the next hour (applied or, in shadow mode, not)."""
+    rest_factor: float | None = None
+    """Layer B factor on the rest of today, energy-weighted (applied or not)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +237,17 @@ class Corrector:
         self.weather_typical = WeatherTypical()
         self._weather_factors: dict[datetime, float] = {}
         self._weather_typical_used = WeatherTypical()
+        self.k_hour: float | None = None
+        """Short-term ratio against the published forecast of record."""
+        self.k_hour_weather: float | None = None
+        """The same against the record with the weather factor (weather variant)."""
+        self.short_term = self._initial_short_term()
+        self.tuning = Tuning()
+        self.tuning_days: dict[date, TuningDay] = {}
+        """Hourly records of past days for the nightly choice of the fog layer."""
+        self.asof: dict[int, dict[int, float]] = {}
+        """Today: per full local hour, the corrected forecast of the remaining hours (kWh)
+        as it stood then."""
 
     # ------------------------------------------------------------------ inputs
 
@@ -335,11 +367,17 @@ class Corrector:
 
     @property
     def fog_applied(self) -> float:
-        return self.fog.k if self.settings.fog.mode is FogMode.ON else 1.0
+        """Fog factor applied to the rest of today."""
+        if self.settings.fog.mode is not FogMode.ON or not self.fog_used:
+            return 1.0
+        return self.fog.k
 
     @property
     def fog_shadow(self) -> float | None:
-        return self.fog.k if self.settings.fog.mode is FogMode.SHADOW else None
+        """Fog factor that would apply, in shadow mode."""
+        if self.settings.fog.mode is not FogMode.SHADOW:
+            return None
+        return self.fog.k if self.fog_used else 1.0
 
     def weather_at(self, start: datetime) -> float:
         """Weather factor for the interval starting at ``start`` (applied or not)."""
@@ -404,6 +442,8 @@ class Corrector:
         self._refresh_weather_factors()
         self._record(now)
         self._update_fog(now)
+        self._update_short_term(now)
+        self._capture_asof(now)
         self._capture_checkpoints(now)
         self.last_update = now
 
@@ -452,6 +492,11 @@ class Corrector:
             return FogReason.DISABLED
         return FogReason.NO_FORECAST
 
+    def _initial_short_term(self) -> ShortTermReason:
+        if self.settings.fog.mode is FogMode.OFF or not self.settings.intraday.enabled:
+            return ShortTermReason.DISABLED
+        return ShortTermReason.WAITING
+
     def _compute_level(self, now: datetime) -> None:
         assert self.day is not None
         self.level = compute_level_factor(
@@ -467,6 +512,74 @@ class Corrector:
             self.settings.weather,
         )
         self._refresh_weather_factors()
+        self._tune()
+
+    def _tune(self) -> None:
+        """Nightly choice whether the fog layer may carry the rest of the day."""
+        assert self.day is not None
+        oldest = self.day - timedelta(days=2 * self.settings.intraday.days)
+        days = []
+        for day in sorted(set(self.history) | set(self.tuning_days)):
+            if not oldest <= day < self.day:
+                continue
+            record = self.tuning_days.get(day)
+            if record is None:
+                record = self._tuning_day_from_history(day)
+            if record is not None:
+                days.append(record)
+        self.tuning = tune(days, self.settings.fog, self.settings.intraday)
+
+    def _tuning_day_from_history(self, day: date) -> TuningDay | None:
+        """Hourly record of a day known only from its statistics (e.g. imported): the
+        forecast of record stands in for the forecast as of each hour."""
+        stats = self.history.get(day)
+        if stats is None or not stats.hours or not stats.complete:
+            return None
+        level = (
+            compute_level_factor(self.history.values(), day, self.settings.level)
+            if self.settings.level_enabled
+            else LevelFactor()
+        )
+        return TuningDay(
+            day=day,
+            expected={h: f * level.at(h) for h, _, f in stats.hours if f > 0},
+            actual={h: a for h, a, f in stats.hours if f > 0},
+        )
+
+    def _tuning_day(self, day: date, confidence: float | None) -> TuningDay:
+        """Hourly record of the day that is closing: expected of record as published
+        (level and applied weather factor), measured energy, forecasts as of each hour.
+        Hours with an interval that was curtailed or not measured are left out of all
+        three, so that the forecasts are compared with what was measured."""
+        start, end = day_bounds(day, self.tz)
+        weather_on = self.settings.weather.mode is WeatherMode.ON
+        expected: dict[int, float] = {}
+        actual: dict[int, float] = {}
+        left_out: set[int] = set()
+        for interval in steps(start, end, INTERVAL):
+            point = self.record.get(interval)
+            if point is None or point.p50 <= 0:
+                continue
+            measured = self.bins.interval(interval)
+            if not measured.measured or measured.curtailed:
+                left_out.add(interval.astimezone(self.tz).hour)
+                continue
+            weather = (
+                self.weather_factor_record.get(floor_to(interval, HOUR), 1.0) if weather_on else 1.0
+            )
+            hour = interval.astimezone(self.tz).hour
+            expected[hour] = expected.get(hour, 0.0) + (
+                point.p50 * self.level_at(interval) * weather * INTERVAL_HOURS
+            )
+            actual[hour] = actual.get(hour, 0.0) + measured.energy_kwh
+        for hour in left_out:
+            expected.pop(hour, None)
+            actual.pop(hour, None)
+        asof = {
+            h: {j: kwh for j, kwh in remaining.items() if j in expected}
+            for h, remaining in self.asof.items()
+        }
+        return TuningDay(day, expected, actual, asof or None, confidence)
 
     def _roll_over(self, today: date, now: datetime) -> None:
         previous = self.day
@@ -492,6 +605,14 @@ class Corrector:
         )
         self.history[previous] = stats
         self.report = self._build_report(previous, stats)
+        if stats.complete:
+            self.tuning_days[previous] = self._tuning_day(previous, self.report.base_confidence)
+        self.tuning_days = {
+            d: t
+            for d, t in self.tuning_days.items()
+            if d > today - timedelta(days=2 * self.settings.intraday.days)
+        }
+        self.asof = {}
 
         self.day = today
         start, _ = day_bounds(today, self.tz)
@@ -505,6 +626,8 @@ class Corrector:
         self._compute_level(now)
         self.fog = FogState(reason=self._initial_fog_reason())
         self.fog_weather = FogState(reason=self._initial_fog_reason())
+        self.k_hour = self.k_hour_weather = None
+        self.short_term = self._initial_short_term()
         self.checkpoints = DayCheckpoints()
         if self.next_day_ahead is not None:
             target, bands = self.next_day_ahead
@@ -618,13 +741,109 @@ class Corrector:
                 self.fog_weather, self._fog_inputs(now, with_weather=True), self.settings.fog, now
             )
 
+    def _update_short_term(self, now: datetime) -> None:
+        if self.settings.fog.mode is FogMode.OFF or not self.settings.intraday.enabled:
+            self.k_hour = self.k_hour_weather = None
+            self.short_term = ShortTermReason.DISABLED
+            return
+        applied = self.settings.weather.mode is WeatherMode.ON
+        self.k_hour, self.short_term = self._short_term_ratio(now, with_weather=applied)
+        self.k_hour_weather = (
+            self._short_term_ratio(now, with_weather=True)[0] if self._weather_in_shadow else None
+        )
+
+    def _short_term_ratio(
+        self, now: datetime, *, with_weather: bool
+    ) -> tuple[float | None, ShortTermReason]:
+        """Measured over expected energy in the last hour of final measurements."""
+        assert self.day is not None
+        start, end = day_bounds(self.day, self.tz)
+        horizon = min(self.measured_until(now), end)
+        window = max(start, horizon - HOUR)
+        expected = actual = 0.0
+        for interval in steps(floor_to(window, INTERVAL), horizon, INTERVAL):
+            point = self.record.get(interval)
+            lo, hi = max(interval, window), min(interval + INTERVAL, horizon)
+            if point is None or point.p50 <= 0 or hi <= lo:
+                continue
+            measured = self.bins.actual(lo, hi)
+            if not measured.measured or measured.curtailed:
+                continue
+            weather = (
+                self.weather_factor_record.get(floor_to(interval, HOUR), 1.0)
+                if with_weather
+                else 1.0
+            )
+            hours = (hi - lo).total_seconds() / 3600
+            expected += self.level_at(interval) * weather * point.p50 * hours
+            actual += measured.energy_kwh
+
+        def scale(at: datetime) -> float:
+            return self.level_at(at) * (self.weather_at(at) if with_weather else 1.0)
+
+        day_expected = energy(p.scaled(scale(p.start)) for p in self._today_points()) or 0.0
+        settings = self.settings.intraday
+        k = settings.ratio(actual, expected, day_expected)
+        if k is not None:
+            return k, ShortTermReason.ACTIVE
+        if actual <= 0 < expected and expected >= settings.min_share * day_expected:
+            return None, ShortTermReason.NOTHING_MEASURED
+        return None, ShortTermReason.WAITING
+
+    def _capture_asof(self, now: datetime) -> None:
+        """At the first update of each full local hour with production, keep the corrected
+        forecast (level and applied weather factor, without layer B) of the remaining hours
+        of today."""
+        assert self.day is not None
+        start, end = day_bounds(self.day, self.tz)
+        local = now.astimezone(self.tz)
+        hour = local.hour
+        hour_start = as_utc(local.replace(minute=0, second=0, microsecond=0))
+        if hour in self.asof or not start <= hour_start < end or now - hour_start > CAPTURE_WINDOW:
+            return
+        remaining: dict[int, float] = {}
+        for point in self.base.between(hour_start, end):
+            kwh = point.p50 * self._corrected_scale(point.start) * INTERVAL_HOURS
+            if kwh > 0:
+                h = point.start.astimezone(self.tz).hour
+                remaining[h] = remaining.get(h, 0.0) + kwh
+        if remaining.get(hour, 0.0) > 0:  # from the first hour with production on
+            self.asof[hour] = remaining
+
     @property
-    def _fog_with_weather(self) -> float:
-        """Fog factor the published forecast carries (or would carry, in shadow mode) with
-        the weather factor applied."""
+    def fog_used(self) -> bool:
+        """The fog layer may carry the rest of today (nightly choice or setting)."""
+        return fog_allowed(self.settings.intraday, self.tuning)
+
+    def _layer_b(
+        self, start: datetime, horizon: datetime, state: FogState, k_hour: float | None
+    ) -> float:
+        """Layer B factor for the interval starting at ``start``: the last hour's ratio
+        fading into the fog factor, by the lead time from ``horizon`` (end of the final
+        measurements) to the middle of the part of the interval still unknown."""
+        k_fog = state.k if state.active and self.fog_used else 1.0
+        unknown_from = max(start, horizon)
+        end = start + INTERVAL
+        middle = unknown_from + (end - unknown_from) / 2 if end > unknown_from else end
+        lead = (middle - horizon).total_seconds() / 3600
+        return multiplier(k_hour, k_fog, lead, self.settings.intraday.decay_h)
+
+    def _b_applied(self, start: datetime, horizon: datetime) -> float:
+        if self.settings.fog.mode is not FogMode.ON:
+            return 1.0
+        return self._layer_b(start, horizon, self.fog, self.k_hour)
+
+    def _b_shadow(self, start: datetime, horizon: datetime) -> float:
+        return self._layer_b(start, horizon, self.fog, self.k_hour)
+
+    def _b_weather(self, start: datetime, horizon: datetime) -> float:
+        """Layer B factor the published forecast carries (or would carry, in shadow mode)
+        with the weather factor applied."""
         if self.settings.weather.mode is WeatherMode.ON:
-            return self.fog_applied  # the published fog layer already runs with it
-        return self.fog_weather.k if self.settings.fog.mode is FogMode.ON else 1.0
+            return self._b_applied(start, horizon)  # the published layer already runs with it
+        if self.settings.fog.mode is not FogMode.ON:
+            return 1.0
+        return self._layer_b(start, horizon, self.fog_weather, self.k_hour_weather)
 
     # ------------------------------------------------------------------ checkpoints
 
@@ -651,21 +870,36 @@ class Corrector:
         return Band(p50, p10, p90)
 
     def _variants(
-        self, points: list[ForecastPoint], start: datetime, end: datetime, measured: float = 0.0
+        self,
+        points: list[ForecastPoint],
+        start: datetime,
+        end: datetime,
+        horizon: datetime,
+        measured: float = 0.0,
     ) -> dict[str, Band]:
         """Base, corrected and (in shadow mode) shadow version of the base between ``start``
-        and ``end``; ``measured`` is added to the corrected variants."""
-        corrected = self._base_band(points, start, end, self._corrected_scale)
+        and ``end``; ``measured`` is added to the corrected variants. Layer B depends on
+        the lead time from ``horizon``, the end of the final measurements."""
+
+        def corrected(at: datetime) -> float:
+            return self._corrected_scale(at) * self._b_applied(at, horizon)
+
         bands = {
             BASE: self._base_band(points, start, end),
-            CORRECTED: corrected.scaled(self.fog_applied, measured),
+            CORRECTED: self._base_band(points, start, end, corrected).scaled(1.0, measured),
         }
-        shadow = self.fog_shadow
-        if shadow is not None:
-            bands[SHADOW] = corrected.scaled(shadow, measured)
+        if self.settings.fog.mode is FogMode.SHADOW:
+
+            def shadow(at: datetime) -> float:
+                return self._corrected_scale(at) * self._b_shadow(at, horizon)
+
+            bands[SHADOW] = self._base_band(points, start, end, shadow).scaled(1.0, measured)
         if self._weather_in_shadow:
-            with_weather = self._base_band(points, start, end, self._weather_scale)
-            bands[WEATHER] = with_weather.scaled(self._fog_with_weather, measured)
+
+            def with_weather(at: datetime) -> float:
+                return self._weather_scale(at) * self._b_weather(at, horizon)
+
+            bands[WEATHER] = self._base_band(points, start, end, with_weather).scaled(1.0, measured)
         return bands
 
     def _corrected_scale(self, start: datetime) -> float:
@@ -691,7 +925,7 @@ class Corrector:
         ):
             until = max(start, min(nominal, self.measured_until(now)))
             measured = self.bins.actual(start, until).energy_kwh
-            variants = self._variants(today_base, until, end, measured)
+            variants = self._variants(today_base, until, end, until, measured)
             variants[BASE] = self._base_band(today_base, start, end)
             self.checkpoints.day_total = variants
 
@@ -701,7 +935,8 @@ class Corrector:
             if key in self.checkpoints.rest or not nominal <= now < nominal + CAPTURE_WINDOW:
                 continue
             if today_base:
-                self.checkpoints.rest[key] = self._variants(today_base, nominal, end)
+                horizon = min(nominal, self.measured_until(now))
+                self.checkpoints.rest[key] = self._variants(today_base, nominal, end, horizon)
 
         nominal = local_time(self.day, DAY_AHEAD_CHECKPOINT, self.tz)
         tomorrow = self.day + timedelta(days=1)
@@ -734,7 +969,7 @@ class Corrector:
             actual_rest,
             complete=stats.complete,
             level_factor=self.level_applied,
-            fog_active=self.fog.active,
+            fog_active=self.fog.active and self.fog_used,
         )
 
     # ------------------------------------------------------------------ output
@@ -797,11 +1032,18 @@ class Corrector:
         rest_energy = Band(0.0, 0.0 if bands else None, 0.0 if bands else None)
         for point in today_base:
             interval_end = point.start + INTERVAL
-            corrected = point.scaled(self._corrected_scale(point.start) * self.fog_applied)
+            layer_b = self._b_applied(point.start, horizon)
+            corrected = point.scaled(self._corrected_scale(point.start) * layer_b)
             if interval_end <= now:
-                # Past: measured where readings cover the interval, the level-corrected
-                # forecast of record for the uncovered rest.
-                record = self.record.get(point.start, point).scaled(self.level_at(point.start))
+                # Past: measured where readings cover the interval, the corrected forecast
+                # of record for the part not measured yet.
+                record = self.record.get(point.start, point)
+                weather = (
+                    self.weather_factor_record.get(floor_to(point.start, HOUR), 1.0)
+                    if self.settings.weather.mode is WeatherMode.ON
+                    else 1.0
+                )
+                record = record.scaled(self.level_at(point.start) * weather * layer_b)
                 today_points.append(self._measured_blend(record, interval_end, horizon))
                 continue
             rest_points.append(corrected)
@@ -851,19 +1093,50 @@ class Corrector:
             actual_so_far=self.bins.actual(start, min(now, end)).energy_kwh,
             level=self.level,
             level_applied=self.level_applied,
-            fog=FogStatus(
-                mode=self.settings.fog.mode,
-                gate=self.settings.fog.gate.name,
-                applied=self.fog_applied,
-                shadow=self.fog_shadow,
-                state=self.fog,
-            ),
+            fog=self._fog_status(now, today_base),
             report=self.report,
             base_valid=self.base_valid,
             base_refreshed_at=self.base_refreshed_at,
             base_failures_today=self.base_failures_today,
             history=tuple(self.history[d] for d in sorted(self.history)),
             weather=self._weather_status(now, today_base, tomorrow_base),
+        )
+
+    def _fog_status(self, now: datetime, today_base: list[ForecastPoint]) -> FogStatus:
+        """Layer B as published, with its factor on the next hour and on the rest of today
+        (applied or, in shadow mode, what it would be)."""
+        horizon = self.measured_until(now)
+        mode = self.settings.fog.mode
+
+        def factor(span_end: datetime | None) -> float | None:
+            if mode is FogMode.OFF:
+                return None
+            plain = scaled = 0.0
+            for point in today_base:
+                end = point.start + INTERVAL
+                if end <= now or (span_end is not None and point.start >= span_end):
+                    continue
+                kwh = (
+                    point.p50
+                    * self._corrected_scale(point.start)
+                    * ((end - max(now, point.start)).total_seconds() / 3600)
+                )
+                plain += kwh
+                scaled += kwh * self._b_shadow(point.start, horizon)
+            return scaled / plain if plain > 0 else None
+
+        return FogStatus(
+            mode=mode,
+            gate=self.settings.fog.gate.name,
+            applied=self.fog_applied,
+            shadow=self.fog_shadow,
+            state=self.fog,
+            k_hour=self.k_hour,
+            short_term=self.short_term,
+            fog_used=self.fog_used,
+            tuning=self.tuning,
+            next_hour_factor=factor(now + HOUR),
+            rest_factor=factor(None),
         )
 
     def _weather_status(
@@ -884,23 +1157,24 @@ class Corrector:
         if settings.mode is WeatherMode.OFF or not self._weather_factors:
             return status
         weather = {} if self.weather is None else self.weather.as_dict()
+        horizon = self.measured_until(now)
 
         def summary(points: list[ForecastPoint], start: datetime, today: bool) -> tuple[Any, ...]:
             plain = weighted = with_weather = 0.0
             hours: dict[str, float] = {}
-            fog_weather = self._fog_with_weather if today else 1.0
             for point in points:
+                layer_b = self._b_weather(point.start, horizon) if today else 1.0
                 end = point.start + INTERVAL
                 hours_left = max(0.0, (end - max(start, point.start)).total_seconds()) / 3600
                 level = self.level_at(point.start) * point.p50 * hours_left
                 plain += level
                 weighted += level * self.weather_at(point.start)
-                with_weather += level * fog_weather * self.weather_at(point.start)
+                with_weather += level * layer_b * self.weather_at(point.start)
                 hour = floor_to(point.start, HOUR)
                 if hour in self._weather_factors:
                     label = f"{local_hour(hour, self.tz):02d}:00"
                     hours[label] = round(self._weather_factors[hour], 3)
-            # The weather factor alone (energy-weighted); the estimate includes the fog layer.
+            # The weather factor alone (energy-weighted); the estimate includes layer B.
             factor = weighted / plain if plain > 0 else None
             hour_starts = {floor_to(p.start, HOUR) for p in points}
             sunshine = [weather[h].sunshine for h in hour_starts if h in weather]
@@ -920,15 +1194,14 @@ class Corrector:
         t_factor, t_estimate, t_hours, t_sun, t_fog = summary(tomorrow_base, t_start, False)
         today_hours = summary(today_base, today_base[0].start, True)[2] if today_base else {}
         hourly: dict[datetime, list[float]] = {}
-        for points, fog_plain, fog_weather in (
-            (today_base, self.fog_applied, self._fog_with_weather),
-            (tomorrow_base, 1.0, 1.0),
-        ):
+        for points, today in ((today_base, True), (tomorrow_base, False)):
             for point in points:
                 kwh = point.p50 * self.level_at(point.start) * INTERVAL_HOURS
                 sums = hourly.setdefault(floor_to(point.start, HOUR), [0.0, 0.0])
-                sums[0] += kwh * fog_plain
-                sums[1] += kwh * fog_weather * self.weather_at(point.start)
+                plain_b = self._b_applied(point.start, horizon) if today else 1.0
+                weather_b = self._b_weather(point.start, horizon) if today else 1.0
+                sums[0] += kwh * plain_b
+                sums[1] += kwh * weather_b * self.weather_at(point.start)
         hours = tuple(
             WeatherHour(
                 start=hour,
@@ -1000,6 +1273,17 @@ class Corrector:
                 [int(s.timestamp()), f] for s, f in sorted(self.weather_factor_record.items())
             ],
             "weather_typical": self.weather_typical.to_dict(),
+            "intraday": {
+                "k_hour": self.k_hour,
+                "k_hour_weather": self.k_hour_weather,
+                "short_term": self.short_term.value,
+                "tuning": self.tuning.to_dict(),
+                "days": [self.tuning_days[d].to_dict() for d in sorted(self.tuning_days)],
+                "asof": [
+                    [h, [[j, round(v, 4)] for j, v in sorted(f.items())]]
+                    for h, f in sorted(self.asof.items())
+                ],
+            },
         }
 
     @classmethod
@@ -1082,4 +1366,20 @@ class Corrector:
             engine.weather_factor_record = {
                 hour: engine.weather_at(hour) for hour in engine.weather_factor_record
             }
+        intraday = data.get("intraday") or {}
+        if engine.short_term is not ShortTermReason.DISABLED:
+            engine.k_hour = intraday.get("k_hour")
+            engine.k_hour_weather = intraday.get("k_hour_weather")
+            try:
+                engine.short_term = ShortTermReason(intraday.get("short_term", "waiting"))
+            except ValueError:
+                engine.short_term = ShortTermReason.WAITING
+        engine.tuning_days = {
+            t.day: t for t in (TuningDay.from_dict(item) for item in intraday.get("days", []))
+        }
+        engine.asof = {
+            int(h): {int(j): float(v) for j, v in f} for h, f in intraday.get("asof", [])
+        }
+        if engine.day is not None:
+            engine._tune()  # settings may have changed since the state was saved
         return engine

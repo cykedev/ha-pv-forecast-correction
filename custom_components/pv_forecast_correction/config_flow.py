@@ -35,6 +35,7 @@ from .const import (
     CONF_FOG_CONFIDENCE,
     CONF_FOG_MIN_FACTOR,
     CONF_FOG_MODE,
+    CONF_FOG_PART,
     CONF_FOG_RECENT_HOURS,
     CONF_FOG_THRESHOLD,
     CONF_FORECAST_TODAY,
@@ -45,6 +46,7 @@ from .const import (
     CONF_LEVEL_MAX,
     CONF_LEVEL_MIN,
     CONF_LEVEL_SHRINK_DAYS,
+    CONF_SHORT_TERM,
     CONF_WEATHER_MODE,
     CONF_WEATHER_STATION,
     CONF_WEATHER_TRUST,
@@ -57,6 +59,7 @@ from .const import (
     SECTION_WEATHER,
 )
 from .core import FogMode, ForecastFormatError, parse_forecast
+from .core.intraday import FogPart
 from .core.weather import STATION_PATTERN, WeatherError, WeatherMode
 from .weather_source import async_stations
 
@@ -236,6 +239,14 @@ class PvForecastCorrectionOptionsFlow(OptionsFlow):
                     SelectSelectorConfig(
                         options=[mode.value for mode in FogMode],
                         translation_key=CONF_FOG_MODE,
+                        mode=SelectSelectorMode.LIST,
+                    )
+                ),
+                vol.Required(CONF_SHORT_TERM): BooleanSelector(),
+                vol.Required(CONF_FOG_PART): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[part.value for part in FogPart],
+                        translation_key=CONF_FOG_PART,
                         mode=SelectSelectorMode.LIST,
                     )
                 ),

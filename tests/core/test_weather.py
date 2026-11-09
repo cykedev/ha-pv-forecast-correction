@@ -9,6 +9,7 @@ import pytest
 from pvfc_core.archive import Archive, WeatherSnapshot
 from pvfc_core.engine import Corrector, Settings
 from pvfc_core.forecast_format import energy
+from pvfc_core.intraday import FogPart, IntradaySettings
 from pvfc_core.level import DayStats
 from pvfc_core.replay import replay
 from pvfc_core.score import CORRECTED, WEATHER
@@ -320,6 +321,7 @@ def test_todays_fog_factor_does_not_touch_tomorrow():
 
     settings = Settings(
         fog=FogSettings(mode=FogMode.ON),
+        intraday=IntradaySettings(enabled=False, fog_part=FogPart.ALWAYS),
         weather=WeatherSettings(mode=WeatherMode.SHADOW, trust=1.0),
     )
     engine, _ = run_live(settings, 1.0)
@@ -347,6 +349,7 @@ def test_the_weather_variant_does_not_count_fog_twice():
     points = [p for day in days for p in curve(day)]
     settings = Settings(
         fog=FogSettings(mode=FogMode.ON),
+        intraday=IntradaySettings(enabled=False, fog_part=FogPart.ALWAYS),
         weather=WeatherSettings(mode=WeatherMode.SHADOW, trust=1.0),
     )
     result = replay(
@@ -423,6 +426,7 @@ def test_with_the_weather_layer_on_its_sensor_matches_the_published_forecast():
 
     settings = Settings(
         fog=FogSettings(mode=FogMode.ON),
+        intraday=IntradaySettings(enabled=False, fog_part=FogPart.ALWAYS),
         weather=WeatherSettings(mode=WeatherMode.ON, trust=1.0),
     )
     engine, _ = run_live(settings, 1.0)
@@ -442,6 +446,7 @@ def test_in_shadow_the_sensor_state_is_the_weather_factor_alone():
 
     settings = Settings(
         fog=FogSettings(mode=FogMode.ON),
+        intraday=IntradaySettings(enabled=False, fog_part=FogPart.ALWAYS),
         weather=WeatherSettings(mode=WeatherMode.SHADOW, trust=1.0),
     )
     engine, _ = run_live(settings, 1.0)
@@ -478,6 +483,7 @@ def test_switching_the_weather_layer_on_continues_its_fog_state():
 
     shadow = Settings(
         fog=FogSettings(mode=FogMode.ON),
+        intraday=IntradaySettings(enabled=False, fog_part=FogPart.ALWAYS),
         weather=WeatherSettings(mode=WeatherMode.SHADOW, trust=1.0),
     )
     engine, _ = run_live(shadow, 1.0)

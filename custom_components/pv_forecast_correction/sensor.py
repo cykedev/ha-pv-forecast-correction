@@ -22,7 +22,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, WEATHER_ATTRIBUTION
 from .coordinator import CorrectionCoordinator, PvForecastCorrectionConfigEntry
-from .core import DayForecast, Result
+from .core import DayForecast, FogMode, Result
 from .core.forecast_format import detailed_forecast, detailed_hourly, rounded_energy
 from .core.score import BASE, CORRECTED, SHADOW, WEATHER, DayReport, VariantErrors
 from .core.weather import WeatherMode
@@ -61,6 +61,8 @@ def _today_attributes(result: Result, tz: tzinfo) -> dict[str, Any]:
         attributes["actual_so_far"] = _round(result.actual_so_far)
         attributes["level_factor"] = _round(result.level_applied)
         attributes["fog_factor"] = _round(result.fog.applied)
+        if result.fog.mode is FogMode.ON and result.fog.rest_factor is not None:
+            attributes["intraday_factor"] = _round(result.fog.rest_factor)
     return attributes
 
 
@@ -280,6 +282,14 @@ SENSORS: tuple[CorrectionSensorDescription, ...] = (
             "k_recent": _round(r.fog.state.k_recent),
             "base_confidence": _round(r.fog.state.confidence),
             "active_since": r.fog.state.active_since,
+            "fog_used": r.fog.fog_used,
+            "short_term": r.fog.short_term.value,
+            "k_hour": _round(r.fog.k_hour),
+            "next_hour_factor": _round(r.fog.next_hour_factor),
+            "rest_factor": _round(r.fog.rest_factor),
+            "tuning_days": len(r.fog.tuning.days),
+            "tuning_error_short_term": _round(r.fog.tuning.loss_follow),
+            "tuning_error_with_fog": _round(r.fog.tuning.loss_fog),
         },
     ),
     CorrectionSensorDescription(

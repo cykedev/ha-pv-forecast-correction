@@ -11,7 +11,8 @@ actually produce** and publishes the result in the same attribute format as the
 EV optimisers, dashboards and your own automations can use it as a drop-in source.
 
 It is not a forecast model. The base forecast supplies the weather, the shape of the day and
-the uncertainty; this integration only adjusts the **level**, from measured facts. Every
+the uncertainty; this integration adjusts the **level** from measured facts and, during the
+day, follows what is being measured for the hours ahead. Every
 published number is *base forecast × factors*, and the factors are shown next to it. The
 base forecast keeps being scored next to the corrected one, so you can always see whether the
 correction helps. An optional weather layer uses the German weather service's station
@@ -65,31 +66,62 @@ corrected = f × base                                 for today and tomorrow
   published factor f. On the reference data it lowered the rest-of-day error by 5 % over a
   summer (107 days) and made no measurable difference over nine autumn days.
 
-### Fog layer (shadow by default)
+### Intraday layer (shadow by default)
 
-On days when a whole morning runs far below a confident forecast — typically fog or low
-stratus that the weather models miss — the rest of the day is scaled down by what was
+Two parts follow what is measured during the day.
+
+**Short-term part.** The ratio of measured to expected energy over the last hour of final
+measurements (expected: the level-corrected forecast of record) is carried into the coming
+intervals and fades with the lead time τ, from the end of the measurements to the middle of
+an interval:
+
+```
+k_hour = Σ measured / Σ (f × forecast)     over the last hour
+m(τ)   = exp(e^(−τ/1 h) · ln k_hour + (1 − e^(−τ/1 h)) · ln k_fog)
+```
+
+Without fog (k_fog = 1) the next half hour gets most of the last hour's deviation and three
+hours ahead almost none. The ratio needs at least 3 % of the day's expected energy in the
+last hour, so the weak hour after sunrise does not count; it is limited to 0.2–2. When
+nothing at all was measured although production was expected (snow on the panels, an
+outage, a stuck meter) the fog factor alone applies. P10, P50 and P90 are scaled alike.
+
+**Fog layer.** On days when a whole morning runs far below the forecast — typically fog or
+low stratus that the weather models miss — the rest of the day is scaled down by what was
 measured:
 
 ```
 k_morning = Σ measured / Σ (f × forecast)    since the first daylight interval
 k_recent  = the same over the last hours
-k         = clamp(k_morning, k_min, 1.0)     once the gate has opened
+k_fog     = clamp(k_morning, k_min, 1.0)     once the gate has opened
 ```
 
-The gate opens when both ratios are below a threshold and, by default, the base forecast was
-confident for the day (P10 ÷ P50 at least 0.5, i.e. a narrow band). It only lowers the
-forecast, and once open it holds for the rest of the day.
+The gate opens when both ratios are below a threshold and, optionally, the base forecast was
+confident for the day (P10 ÷ P50 at least a minimum). It only lowers the forecast, and once
+open it holds for the rest of the day; the short-term part fades into it.
 
-A dull morning followed by a sunny afternoon is the classic failure of any intraday ratio,
-so this layer runs in **shadow mode** by default: it is computed and shown (sensor *Fog
-factor*, and as the *shadow* columns of the error sensor) but not applied. Switch it on in
-the options once the archive shows that it helps at your site.
+**Nightly choice.** A dull morning followed by a sunny afternoon is the classic failure of
+carrying a morning forward: in fog season the morning tells the afternoon, in summer it
+rarely does. Each night both variants — the short-term part alone and with the fog layer —
+are scored on the last 14 days (the rest of the day and the next three hours at every full
+hour, with the forecast as it stood then), and the fog layer is used the next day only when
+it did at least 5 % better. It needs 7 such days; days imported from the history count with
+their forecast of record. The option *Use the fog layer* can force *always* or *never*.
+
+On the reference data — two years of measurements with a weather model's day-ahead forecast
+standing in for the base, a summer and ten autumn days of real Solcast forecasts — the
+short-term part lowered the error of the next hour by 11–40 % in every season and never
+raised the rest-of-day error. The fog layer alone lowered the rest-of-day error by up to
+43 % in autumn fog but raised it by 11–23 % in summer; the nightly choice kept that out.
+
+The layer runs in **shadow mode** by default: it is computed and shown (sensor *Fog factor*
+and its attributes, and as the *shadow* columns of the error sensor) but not applied. Switch
+it on in the options once that shows it helps at your site.
 
 ### Weather layer (off by default)
 
-The fog layer can only react once a dull morning has been measured. The weather layer looks
-ahead instead: it takes the [DWD MOSMIX](https://www.dwd.de/EN/ourservices/met_application_mosmix/met_application_mosmix.html)
+The intraday layer can only react to what has been measured. The weather layer looks ahead
+instead: it takes the [DWD MOSMIX](https://www.dwd.de/EN/ourservices/met_application_mosmix/met_application_mosmix.html)
 station forecast of the Deutscher Wetterdienst — a statistically corrected point forecast
 for about 5,400 stations worldwide (densest in Germany), issued every six hours — as a second
 opinion, hour by hour:
@@ -114,9 +146,9 @@ per hour, today's rest and tomorrow with the weather factor, sunshine and fog pr
 and scored every night as the `weather_*` columns of the error sensor, without changing the
 forecast. Every run is archived — with further MOSMIX elements such as the fog probability
 over 6 and 12 hours, visibility and cloud layers — so `tools/replay.py` can evaluate it and
-other rules later. Switch it on once that shows it helps. While the fog layer is on, the
-weather variant is scored with a fog layer of its own that compares against the forecast with
-the weather factor, as it would run if the weather layer were on.
+other rules later. Switch it on once that shows it helps. While the intraday layer is on, the
+weather variant is scored with an intraday layer of its own that compares against the forecast
+with the weather factor, as it would run if the weather layer were on.
 
 The data is DWD open data (free, no account). The integration downloads the station's latest
 run once an hour (about 40 kB, only when it changed) and the station catalogue once per
@@ -127,7 +159,7 @@ Assistant's home location, or set one in the options.
 
 - **Today:** intervals that have passed carry the measured production (P10 = P50 = P90),
   the current interval blends what was measured with the corrected forecast, and future
-  intervals carry the corrected forecast. An energy counter that steps every few minutes has
+  intervals carry the corrected forecast (with the intraday layer, when it is on). An energy counter that steps every few minutes has
   not yet reported the minutes since its last step; until it does, they use the forecast.
   The state is therefore the best estimate of the day total: measured so far plus corrected
   rest.
@@ -182,8 +214,10 @@ integration). Several entries are possible, e.g. one per base forecast.
 | | Days learned from | 14 | Complete past days in the ratio. |
 | | Start-up weight | 1 day | Days at ratio 1.0 added to the ratio. |
 | | Lowest / highest factor | 0.3 / 1.5 | Limits of the factor. |
-| Fog layer | Mode | shadow | `off`, `shadow` (compute and show) or `on` (apply). |
-| | Threshold | 0.7 | Opens when the morning and the recent window produced less than this share of the forecast. |
+| Intraday layer | Mode | shadow | `off`, `shadow` (compute, show and score) or `on` (apply). |
+| | Short-term part | on | Carry the last hour's ratio into the next hours. |
+| | Use the fog layer | automatic | `automatic` (decided each night from the last 14 days), `always` or `never`. |
+| | Threshold | 0.7 | The fog layer opens when the morning and the recent window produced less than this share of the forecast. |
 | | Minimum forecast confidence | 0.5 | Base P10 ÷ P50 for the day must be at least this; 0 drops the condition. |
 | | Recent window | 2 h | Length of the recent window. |
 | | Lowest factor | 0.2 | Limit of the fog factor. |
@@ -204,14 +238,14 @@ too: the integration follows the new ID.
 
 | Entity | State | Main attributes |
 |---|---|---|
-| `sensor.pv_forecast_correction_today` | corrected day total (kWh) | `estimate`, `estimate10`, `estimate90`, `detailedForecast`, `detailedHourly`, `actual_so_far`, `base_estimate*`, `level_factor`, `fog_factor` |
+| `sensor.pv_forecast_correction_today` | corrected day total (kWh) | `estimate`, `estimate10`, `estimate90`, `detailedForecast`, `detailedHourly`, `actual_so_far`, `base_estimate*`, `level_factor`, `fog_factor`, `intraday_factor` (intraday layer on the rest of today, when on) |
 | `sensor.pv_forecast_correction_remaining_today` | corrected rest of today (kWh) | `estimate`, `estimate10`, `estimate90`, `detailedForecast` (rest only), `base_estimate*` |
-| `sensor.pv_forecast_correction_tomorrow` | corrected total tomorrow (kWh) | as *today*, without `actual_so_far` and `fog_factor` |
+| `sensor.pv_forecast_correction_tomorrow` | corrected total tomorrow (kWh) | as *today*, without `actual_so_far`, `fog_factor` and `intraday_factor` |
 | `sensor.pv_forecast_correction_level_factor` | f (day factor) | `status`, `days_used`, `curve` (factor per hour), `sum_actual`, `sum_forecast`, `raw_ratio`, `shrink_weight`, `daily_ratios`, `imported_days`, `computed_at` |
-| `sensor.pv_forecast_correction_fog_factor` | k applied (1 when inactive) | `mode`, `reason`, `gate`, `k_shadow`, `k_morning`, `k_recent`, `base_confidence`, `active_since` |
+| `sensor.pv_forecast_correction_fog_factor` | fog factor applied (1 when inactive or not used) | `mode`, `reason`, `gate`, `k_shadow`, `k_morning`, `k_recent`, `base_confidence`, `active_since`, `fog_used` (fog layer allowed today: nightly choice or setting), `short_term`, `k_hour`, `next_hour_factor`, `rest_factor` (intraday layer on the next hour and the rest of today, applied or in shadow), `tuning_days`, `tuning_error_short_term`, `tuning_error_with_fog` |
 | `sensor.pv_forecast_correction_weather_factor` | weather factor for the coming hours of sun (rest of today; after sunset, tomorrow) | `mode`, `status`, `station`, `station_distance_km`, `issued_at`, `tomorrow_factor`, `rest_today_kwh`, `tomorrow_kwh`, `factors_today`, `factors_tomorrow`, `sunshine_*`, `fog_probability_*`, `days_learned`, `forecast_hours` (per hour of today and tomorrow: `period_start`, `pv_corrected` and `pv_estimate` in kW without and with the weather factor, `factor`, `sunshine_min`, `fog`, `low_cloud`; not recorded) |
 | `sensor.pv_forecast_correction_error_base` | yesterday's rest-of-day MAE of the base (kWh) | `rest_of_day` per time, `day_error`, `day_ahead_error`, `day_p10_held`, `day_p90_held`, `day_ahead_p10_held`, `status` |
-| `sensor.pv_forecast_correction_error_corrected` | the same for the corrected forecast | as above, plus `shadow_*` / `weather_*` while the fog / weather layer is in shadow mode |
+| `sensor.pv_forecast_correction_error_corrected` | the same for the corrected forecast | as above, plus `shadow_*` / `weather_*` while the intraday / weather layer is in shadow mode |
 | `sensor.pv_forecast_correction_error_with_weather` | the same for the corrected forecast with the weather factor | as *error base*; long-term statistics make the three comparable over weeks |
 | `sensor.pv_forecast_correction_base_age` | last refresh of the base forecast | `status`, `failures_today` |
 
@@ -258,7 +292,9 @@ keep old runs, so without this archive no variant could be evaluated later again
 known at the time.
 
 `tools/replay.py` runs the same correction code over an archive and prints, per variant
-(base, level factor, level factor + fog layer with several gates), the error at every
+(base, level factor, level factor + fog layer alone with several gates, level factor +
+intraday layer: short-term part alone, with the fog layer by nightly choice, and always),
+the error at every
 checkpoint, by day class, for the day total and for the day ahead, plus a pass/fail table
 for each layer:
 
@@ -319,14 +355,15 @@ data:
   expected) and disappears once the input works again. The correction keeps the last base
   forecast it had, including tomorrow's, and does not learn from intervals without readings.
 - **Diagnostics.** *Download diagnostics* on the integration shows the configuration, the
-  learned days, the fog layer state, the last day's errors and the archive status.
+  learned days, the intraday layer state, the last day's errors and the archive status.
 
 ## Development
 
 ```
 custom_components/pv_forecast_correction/
   core/          plain Python, no Home Assistant import: format, time grid, measurement,
-                 level factor, fog layer, scoring, archive, replay, engine
+                 level factor, intraday layer (fog layer, short-term part), scoring,
+                 archive, replay, engine
   *.py           Home Assistant glue: config flow, coordinator, sensors, diagnostics
 tools/replay.py  replay over an archive file
 tests/           core and tool tests (no Home Assistant), integration tests

@@ -8,6 +8,7 @@ from pvfc_core.archive import Snapshot
 from pvfc_core.engine import Corrector, Settings
 from pvfc_core.fog import FogGate, FogMode, FogReason, FogSettings
 from pvfc_core.forecast_format import Forecast, ForecastPoint, energy
+from pvfc_core.intraday import FogPart, IntradaySettings
 from pvfc_core.level import DayStats, LevelSettings
 from pvfc_core.replay import replay
 from pvfc_core.score import BASE, CORRECTED, SHADOW
@@ -17,6 +18,8 @@ from .synthetic import TZ, bins_from, curve, daily_snapshots, day_range, forecas
 
 FIRST = date(2026, 6, 1)
 SHADOW_SETTINGS = Settings(fog=FogSettings(mode=FogMode.SHADOW))
+FOG_ONLY = IntradaySettings(enabled=False, fog_part=FogPart.ALWAYS)
+"""Layer B as the fog layer alone (no short-term part, fog layer always allowed)."""
 
 
 def at(day: date, hour: int, minute: int = 0) -> datetime:
@@ -72,7 +75,7 @@ def test_rest_of_day_errors_are_exact():
 def test_fog_shadow_does_not_change_the_published_forecast():
     days = day_range(FIRST, 2)
     gate = FogSettings(mode=FogMode.SHADOW, gate=FogGate(threshold=0.7, min_confidence=0.5))
-    result = run_days(days, 0.3, Settings(fog=gate))
+    result = run_days(days, 0.3, Settings(fog=gate, intraday=FOG_ONLY))
     report = result.reports[FIRST]
     assert report.fog_active
     assert report.variants[CORRECTED].rest == report.variants[BASE].rest
@@ -82,7 +85,7 @@ def test_fog_shadow_does_not_change_the_published_forecast():
 def test_fog_on_scales_the_rest_of_the_day():
     days = day_range(FIRST, 2)
     gate = FogSettings(mode=FogMode.ON, gate=FogGate(threshold=0.7, min_confidence=None))
-    report = run_days(days, 0.3, Settings(fog=gate)).reports[FIRST]
+    report = run_days(days, 0.3, Settings(fog=gate, intraday=FOG_ONLY)).reports[FIRST]
     assert SHADOW not in report.variants
     # The rest of the day was forecast exactly: corrected = 0.3 x base = actual.
     assert report.variants[CORRECTED].rest["12:00"] == pytest.approx(0.0, abs=1e-9)
@@ -93,7 +96,9 @@ def test_fog_on_scales_the_rest_of_the_day():
 
 def test_fog_gate_stays_closed_on_normal_days():
     gate = FogSettings(mode=FogMode.ON, gate=FogGate(threshold=0.7, min_confidence=0.5))
-    report = run_days(day_range(FIRST, 2), 0.95, Settings(fog=gate)).reports[FIRST]
+    report = run_days(day_range(FIRST, 2), 0.95, Settings(fog=gate, intraday=FOG_ONLY)).reports[
+        FIRST
+    ]
     assert not report.fog_active
     assert report.variants[CORRECTED].rest == report.variants[BASE].rest
 

@@ -80,10 +80,12 @@
             }
           },
           "fog": {
-            "name": "Fog layer",
-            "description": "On days when a whole morning runs far below a confident forecast (fog, low stratus), scales the rest of the day down by the measured ratio. Shadow mode computes and shows it without changing the forecast.",
+            "name": "Intraday layer",
+            "description": "Follows what is measured during the day. The short-term part carries the last hour's ratio of measured to expected energy forward and lets it fade within about an hour, so the next hours track reality. The fog layer scales the rest of the day by the morning's ratio once a whole morning has run far below the forecast (fog, low stratus); whether it may do so is decided each night from the last 14 days (automatic), because fog persists while dull summer mornings usually clear up. Shadow mode computes, shows and scores all of this without changing the forecast.",
             "data": {
               "fog_mode": "Mode",
+              "short_term": "Short-term part",
+              "fog_part": "Use the fog layer",
               "fog_threshold": "Threshold",
               "fog_min_confidence": "Minimum forecast confidence",
               "fog_recent_hours": "Recent window",
@@ -91,6 +93,8 @@
             },
             "data_description": {
               "fog_mode": "Off, shadow (computed and shown only) or on (applied).",
+              "short_term": "Carry the last hour's measured/expected ratio into the next hours (fades within about an hour).",
+              "fog_part": "Automatic: only when it did clearly better than the short-term part alone over the last 14 days (needs at least 7 days). Always or never override that.",
               "fog_threshold": "The layer opens when the morning and the recent window both produced less than this share of the forecast.",
               "fog_min_confidence": "Additionally requires the base forecast's P10 ÷ P50 for the day to be at least this (a narrow, confident forecast). 0 switches this condition off.",
               "fog_recent_hours": "Length of the recent window.",
@@ -154,6 +158,13 @@
         "shadow": "Shadow (compute and show only)",
         "on": "On (apply)"
       }
+    },
+    "fog_part": {
+      "options": {
+        "auto": "Automatic (decided each night)",
+        "always": "Always",
+        "never": "Never"
+      }
     }
   },
   "entity": {
@@ -187,6 +198,9 @@
           },
           "fog_factor": {
             "name": "Fog factor"
+          },
+          "intraday_factor": {
+            "name": "Layer B factor on the rest of today"
           }
         }
       },
@@ -330,6 +344,36 @@
           },
           "active_since": {
             "name": "Active since"
+          },
+          "fog_used": {
+            "name": "Fog layer allowed today"
+          },
+          "short_term": {
+            "name": "Short-term part",
+            "state": {
+              "disabled": "Off",
+              "waiting": "Waiting for enough expected energy",
+              "nothing_measured": "Nothing measured in the last hour",
+              "active": "Active"
+            }
+          },
+          "k_hour": {
+            "name": "Ratio last hour"
+          },
+          "next_hour_factor": {
+            "name": "Factor on the next hour"
+          },
+          "rest_factor": {
+            "name": "Factor on the rest of today"
+          },
+          "tuning_days": {
+            "name": "Days behind the nightly choice"
+          },
+          "tuning_error_short_term": {
+            "name": "Error short-term part alone (kWh)"
+          },
+          "tuning_error_with_fog": {
+            "name": "Error with fog layer (kWh)"
           }
         }
       },

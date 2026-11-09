@@ -9,8 +9,10 @@ compared at the same checkpoints: day total as of 07:00, rest of the day as of 0
 
 Variants:
   base           the base forecast as it was published
-  level          layer A (level factor), fog layer off
-  level+fog      layer A plus layer B, one run per gate candidate
+  level          layer A (level factor), layer B off
+  level+fog      layer A plus the fog layer alone, one run per gate candidate
+  level+B        layer A plus layer B as it runs: the short-term part alone, and with the
+                 fog layer (chosen each night, or always)
   level+weather  layer A plus layer C (DWD MOSMIX), when the archive holds weather runs
 
 Usage:
@@ -50,6 +52,7 @@ _load_core()
 from pvfc_core.archive import Archive  # noqa: E402
 from pvfc_core.engine import Settings  # noqa: E402
 from pvfc_core.fog import FogGate, FogMode, FogSettings  # noqa: E402
+from pvfc_core.intraday import FogPart, IntradaySettings  # noqa: E402
 from pvfc_core.level import LevelSettings  # noqa: E402
 from pvfc_core.replay import ReplayResult, replay  # noqa: E402
 from pvfc_core.score import (  # noqa: E402
@@ -71,6 +74,9 @@ WEATHER_VARIANTS = {
     "trust 1": {"trust": 1.0},
     "trust 1, only lowers": {"trust": 1.0, "max_factor": 1.0},
 }
+
+FOG_ONLY = IntradaySettings(enabled=False, fog_part=FogPart.ALWAYS)
+"""Layer B as the fog layer alone (gate candidates)."""
 
 DEFAULT_GATES = (
     FogGate(None, None),
@@ -157,7 +163,7 @@ def _rest_mae(report: DayReport, variant: str) -> float | None:
 
 def _day_table(
     level_reports: dict[date, DayReport],
-    fog_runs: dict[FogGate, ReplayResult],
+    fog_runs: dict[str, tuple[FogGate | None, ReplayResult]],
     classes: dict[date, str],
 ) -> str:
     gates = list(fog_runs)
@@ -176,14 +182,14 @@ def _day_table(
             _fmt(_rest_mae(report, CORRECTED)),
         ]
         for gate in gates:
-            fog_report = fog_runs[gate].reports.get(day)
+            fog_report = fog_runs[gate][1].reports.get(day)
             if fog_report is None or CORRECTED not in fog_report.variants:
                 row.append("-")
                 continue
             mark = "*" if fog_report.fog_active else ""
             row.append(_fmt(_rest_mae(fog_report, CORRECTED)) + mark)
         rows.append(row)
-    legend = ", ".join(f"B{index + 1} = {gate.name}" for index, gate in enumerate(gates))
+    legend = ", ".join(f"B{index + 1} = {gate}" for index, gate in enumerate(gates))
     return (
         _table(header, rows)
         + f"\n\nRest-of-day MAE per day in kWh; * = fog layer active. {legend}."
@@ -265,10 +271,41 @@ def main(argv: list[str] | None = None) -> int:
         if level.by_time
         else None
     )
-    fog_runs = {
-        gate: run(Settings(level=level, fog=replace(fog_base, mode=FogMode.ON, gate=gate)))
+    fog_runs: dict[str, tuple[FogGate | None, ReplayResult]] = {
+        f"fog {gate.name}": (
+            gate,
+            run(
+                Settings(
+                    level=level,
+                    fog=replace(fog_base, mode=FogMode.ON, gate=gate),
+                    intraday=FOG_ONLY,
+                )
+            ),
+        )
         for gate in DEFAULT_GATES
     }
+    # Layer B as it runs, with the gate the integration ran with (else "consistency 0.7":
+    # the nightly choice keeps the fog layer out of seasons where it does not help).
+    stored_gate = stored_fog.get("gate") or {}
+    b_gate = FogGate(
+        stored_gate.get("threshold", 0.7) if stored_gate else 0.7,
+        stored_gate.get("min_confidence") if stored_gate else None,
+    )
+    for label, part in (
+        ("short-term", FogPart.NEVER),
+        (f"short-term + fog, nightly choice ({b_gate.name})", FogPart.AUTO),
+        (f"short-term + fog, always ({b_gate.name})", FogPart.ALWAYS),
+    ):
+        fog_runs[label] = (
+            None if part is FogPart.NEVER else b_gate,
+            run(
+                Settings(
+                    level=level,
+                    fog=replace(fog_base, mode=FogMode.ON, gate=b_gate),
+                    intraday=IntradaySettings(fog_part=part),
+                )
+            ),
+        )
     weather_runs = (
         {
             label: run(
@@ -320,12 +357,12 @@ def main(argv: list[str] | None = None) -> int:
     rows.append(
         _row("level, by time of day" if level.by_time else "level", complete, CORRECTED, classes)
     )
-    for gate, fog_run in fog_runs.items():
+    for label, (_, fog_run) in fog_runs.items():
         fog_reports = [
             r for r in sorted(fog_run.reports.values(), key=lambda r: r.day) if r.complete
         ]
         fog_reports = [r for r in fog_reports if in_range(r.day)]
-        rows.append(_row(f"level + fog ({gate.name})", fog_reports, CORRECTED, classes))
+        rows.append(_row(f"level + {label}", fog_reports, CORRECTED, classes))
     for label, weather_run in weather_runs.items():
         weather_reports = [
             r for d, r in sorted(weather_run.reports.items()) if in_range(d) and r.complete
@@ -360,14 +397,14 @@ def main(argv: list[str] | None = None) -> int:
     print(_criteria_table(criteria))
     print(f"\nVerdict: {_verdict(criteria)}")
 
-    for gate, fog_run in fog_runs.items():
+    for label, (gate, fog_run) in fog_runs.items():
         fog_reports = {d: r for d, r in fog_run.reports.items() if in_range(d) and r.complete}
         active = sorted(d for d, r in fog_reports.items() if r.fog_active)
-        print(f"\n## Layer B ({gate.name}) against layer A alone\n")
-        if gate.min_confidence is not None and not has_band:
+        print(f"\n## Layer B ({label}) against layer A alone\n")
+        if gate is not None and gate.min_confidence is not None and not has_band:
             print("Not evaluable: the base forecast in this archive has no P10/P90 band.")
             continue
-        print(f"Active on {len(active)} days in {len(spells(active))} spells.\n")
+        print(f"Fog layer active on {len(active)} days in {len(spells(active))} spells.\n")
         criteria = gate_criteria(
             fog_reports,
             level_reports,

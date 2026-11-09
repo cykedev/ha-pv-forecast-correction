@@ -64,7 +64,10 @@ CREATE TABLE IF NOT EXISTS correction (
     fog_reason    TEXT,
     today_kwh     REAL,
     remaining_kwh REAL,
-    tomorrow_kwh  REAL
+    tomorrow_kwh  REAL,
+    k_hour        REAL,
+    rest_factor   REAL,
+    fog_used      INTEGER
 );
 CREATE TABLE IF NOT EXISTS day_report (
     day    TEXT PRIMARY KEY,
@@ -141,6 +144,12 @@ class CorrectionRow:
     today_kwh: float | None
     remaining_kwh: float | None
     tomorrow_kwh: float | None
+    k_hour: float | None = None
+    """Short-term ratio of layer B (measured over expected in the last hour)."""
+    rest_factor: float | None = None
+    """Layer B factor on the rest of today (applied or, in shadow mode, not)."""
+    fog_used: bool | None = None
+    """Whether the fog layer may carry the rest of today (nightly choice or setting)."""
 
 
 def _ts(value: datetime) -> int:
@@ -177,6 +186,11 @@ class Archive:
             weather_columns = {row[1] for row in conn.execute("PRAGMA table_info(weather_value)")}
             if "extra" not in weather_columns:  # files written by 0.5.0 to 0.5.2
                 conn.execute("ALTER TABLE weather_value ADD COLUMN extra TEXT")
+            correction_columns = {row[1] for row in conn.execute("PRAGMA table_info(correction)")}
+            added = (("k_hour", "REAL"), ("rest_factor", "REAL"), ("fog_used", "INTEGER"))
+            for name, kind in added:
+                if name not in correction_columns:  # files written before 0.6.0
+                    conn.execute(f"ALTER TABLE correction ADD COLUMN {name} {kind}")
             row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
             if row is None:
                 conn.execute(
@@ -314,8 +328,8 @@ class Archive:
         with self._transaction() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO correction (ts, level_factor, fog_applied, fog_shadow,"
-                " k_morning, k_recent, fog_reason, today_kwh, remaining_kwh, tomorrow_kwh)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " k_morning, k_recent, fog_reason, today_kwh, remaining_kwh, tomorrow_kwh,"
+                " k_hour, rest_factor, fog_used) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     _ts(row.ts),
                     row.level_factor,
@@ -327,6 +341,9 @@ class Archive:
                     row.today_kwh,
                     row.remaining_kwh,
                     row.tomorrow_kwh,
+                    row.k_hour,
+                    row.rest_factor,
+                    None if row.fog_used is None else int(row.fog_used),
                 ),
             )
 
@@ -516,9 +533,13 @@ class Archive:
                     "today_kwh",
                     "remaining_kwh",
                     "tomorrow_kwh",
+                    "k_hour",
+                    "rest_factor",
+                    "fog_used",
                 ],
                 "SELECT ts, level_factor, fog_applied, fog_shadow, k_morning, k_recent,"
-                " fog_reason, today_kwh, remaining_kwh, tomorrow_kwh FROM correction ORDER BY ts",
+                " fog_reason, today_kwh, remaining_kwh, tomorrow_kwh, k_hour, rest_factor,"
+                " fog_used FROM correction ORDER BY ts",
                 (0,),
             ),
             "weather.csv": (
