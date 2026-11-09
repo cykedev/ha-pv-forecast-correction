@@ -267,3 +267,25 @@ def test_old_days_do_not_decide():
     engine.recompute_level(at(later, 6))
     assert engine.tuning.days == ()
     assert not engine.fog_used
+
+
+def test_imported_days_are_scored_with_todays_level_factor():
+    engine = Corrector(Settings(fog=FogSettings(mode=FogMode.ON, gate=GATE)), TZ)
+    now = at(FIRST + timedelta(days=10), 6)
+    rows = []
+    for offset in range(10):
+        hours = tuple((h, 0.5 * (h - 6), float(h - 6)) for h in range(8, 16))
+        rows.append(
+            (
+                FIRST + timedelta(days=offset),
+                sum(a for _, a, _ in hours),
+                sum(f for *_, f in hours),
+                hours,
+            )
+        )
+    engine.import_days(rows, now)
+    record = engine._tuning_day_from_history(FIRST)
+    assert record.expected == pytest.approx({h: (h - 6) * engine.level.at(h) for h in range(8, 16)})
+    # The base was steadily too high, not foggy: with today's level that is no reason for
+    # the fog layer (with the level as of each day it looked like fog every morning).
+    assert not engine.tuning.use_fog

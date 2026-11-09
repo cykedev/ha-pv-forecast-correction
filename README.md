@@ -106,7 +106,7 @@ rarely does. Each night both variants — the short-term part alone and with the
 are scored on the last 14 days (the rest of the day and the next three hours at every full
 hour, with the forecast as it stood then), and the fog layer is used the next day only when
 it did at least 5 % better. It needs 7 such days; days imported from the history count with
-their forecast of record. The option *Use the fog layer* can force *always* or *never*.
+their forecast of record, scaled with today's level factor. The option *Use the fog layer* can force *always* or *never*.
 
 On the reference data — two years of measurements with a weather model's day-ahead forecast
 standing in for the base, a summer and ten autumn days of real Solcast forecasts — the

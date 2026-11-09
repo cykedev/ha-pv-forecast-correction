@@ -25,7 +25,8 @@ mornings clear up), so no seasonal switch is needed. ``always`` and ``never`` ov
 The records hold per local clock hour the expected energy of record, the measured energy
 and, for each full hour, the corrected forecast of the remaining hours as it stood then
 (``asof``). Days without ``asof`` (imported from the recorder) use their record instead,
-which knows later base updates and so rates the base a little too well.
+scaled with today's level factor; it knows later base updates and so rates the base a
+little too well.
 """
 
 from __future__ import annotations

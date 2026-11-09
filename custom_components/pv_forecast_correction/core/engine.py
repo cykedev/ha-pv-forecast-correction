@@ -531,15 +531,14 @@ class Corrector:
 
     def _tuning_day_from_history(self, day: date) -> TuningDay | None:
         """Hourly record of a day known only from its statistics (e.g. imported): the
-        forecast of record stands in for the forecast as of each hour."""
+        forecast of record stands in for the forecast as of each hour, scaled with today's
+        level factor. The factor as of that day would start near 1.0 at the beginning of
+        an imported history and make the base look far worse than the corrected forecast
+        published now."""
         stats = self.history.get(day)
         if stats is None or not stats.hours or not stats.complete:
             return None
-        level = (
-            compute_level_factor(self.history.values(), day, self.settings.level)
-            if self.settings.level_enabled
-            else LevelFactor()
-        )
+        level = self.level if self.settings.level_enabled else LevelFactor()
         return TuningDay(
             day=day,
             expected={h: f * level.at(h) for h, _, f in stats.hours if f > 0},
