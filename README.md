@@ -104,7 +104,9 @@ expects sun, w drops for exactly those hours — the evening before for tomorrow
 early morning for today, when battery and EV planners decide. Hours MOSMIX sees brighter than
 usual are raised: the level factor learns the average over dull and bright days, so both
 directions belong together. The usual ratio is learned from the forecasts of record of the
-last 14 days; before that, today's and tomorrow's forecasts stand in for it, so the layer
+last 14 days, from the hours that get a factor (not the weak hours around sunrise and
+sunset). For hours none of those days covers — before the first full day, for instance
+after an install in the afternoon — today's and tomorrow's forecasts stand in, so the layer
 works from the first day but says little until it has seen different kinds of days.
 
 In **shadow** mode the layer is fetched, computed and shown (sensor *Weather factor*: factor

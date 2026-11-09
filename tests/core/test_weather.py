@@ -21,6 +21,7 @@ from pvfc_core.weather import (
     WeatherPoint,
     WeatherSettings,
     hour_factor,
+    hourly_pairs,
     nearest_station,
     parse_mosmix,
     parse_stations,
@@ -135,6 +136,49 @@ def test_typical_ratio_draws_hours_toward_the_whole_day():
     assert typical.at(3) == typical.ratio
 
 
+def test_every_hour_is_drawn_by_the_same_pseudo_days_toward_the_whole_day():
+    settings = WeatherSettings(shrink_days=2.0)
+    typical = typical_ratio([(FIRST, ((8, 0.02, 0.2), (12, 0.1, 2.0)))], settings)
+    assert typical.ratio == pytest.approx(0.12 / 2.2)
+    # One learned day against two pseudo-days: a third of each hour's own ratio, whether
+    # the hour is weak (0.2 kWh) or strong (2 kWh).
+    assert typical.at(8) == pytest.approx((0.1 + 2 * typical.ratio) / 3)
+    assert typical.at(12) == pytest.approx((0.05 + 2 * typical.ratio) / 3)
+    # Three days: three learned against two pseudo-days of the hour's mean size.
+    three = typical_ratio(
+        [(FIRST + timedelta(days=d), ((8, 0.02, 0.2), (12, 0.1, 2.0))) for d in range(3)],
+        settings,
+    )
+    assert three.at(8) == pytest.approx((3 * 0.1 + 2 * three.ratio) / 5)
+
+
+def test_hours_not_learned_yet_come_from_the_current_forecasts():
+    settings = WeatherSettings()
+    learned = typical_ratio([(FIRST, ((16, 0.0016, 0.1),))], settings)
+    current = typical_ratio([(date.min, ((10, 0.2, 2.0), (16, 0.005, 0.1)))], settings)
+    filled = learned.filled_from(current)
+    assert filled.at(16) == learned.at(16)
+    assert filled.at(10) == current.at(10)
+    assert (filled.ratio, filled.days_used, filled.days) == (
+        learned.ratio,
+        learned.days_used,
+        learned.days,
+    )
+
+
+def test_hourly_pairs_leave_out_the_weak_hours_of_each_day():
+    first, second = day_bounds(FIRST, TZ)[0], day_bounds(FIRST + timedelta(days=1), TZ)[0]
+    base = {
+        first + timedelta(hours=h): kwh for h, kwh in ((6, 0.1), (9, 1.0), (11, 2.0), (16, 0.15))
+    }
+    base |= {second + timedelta(hours=h): kwh for h, kwh in ((9, 0.1), (11, 0.5))}
+    weather = {start: WeatherPoint(start, 0.1 * kwh) for start, kwh in base.items()}
+    assert len(hourly_pairs(base, weather, TZ)) == 6
+    pairs = hourly_pairs(base, weather, TZ, min_share=0.1)
+    # Each day against its own strongest hour: 0.1 kWh is weak on the first day only.
+    assert [(hour, kwh) for hour, _, kwh in pairs] == [(9, 1.0), (11, 2.0), (9, 0.1), (11, 0.5)]
+
+
 def weather_runs(days: list[date], ratio=lambda day: 1.0, *, scale: float = 0.1):
     """One run per day at 03:00 UTC: irradiance proportional to the base forecast
     times ``ratio(day)``, for that day and the next."""
@@ -209,6 +253,36 @@ def test_shadow_does_not_change_the_published_forecast_but_on_does():
     assert result.weather.tomorrow_factor == pytest.approx(0.5, abs=0.02)
     assert result.tomorrow.estimate == pytest.approx(0.5 * plain.tomorrow.estimate, rel=0.05)
     assert result.weather.hours_tomorrow
+
+
+def test_a_day_learned_from_a_single_weak_hour_leaves_the_other_hours_alone():
+    # The first day was recorded only around sunset (here: one weak early hour, which the
+    # test curve does not factor): its ratio is far below the hours around noon and must
+    # not stand in for them.
+    engine, _ = run_live(SHADOW, 1.0)
+    engine.weather_typical = typical_ratio(
+        [(FIRST - timedelta(days=1), ((6, 0.025 * 0.05, 0.05),))], SHADOW.weather
+    )
+    now = day_bounds(FIRST, TZ)[0] + timedelta(hours=6, minutes=5)
+    engine.update(now)
+    result = engine.result(now)
+    assert result.weather.learned
+    assert result.weather.hours_tomorrow
+    assert all(f == pytest.approx(1.0, abs=0.01) for f in result.weather.hours_today.values())
+    assert all(f == pytest.approx(1.0, abs=0.01) for f in result.weather.hours_tomorrow.values())
+
+
+def test_only_the_hours_that_get_a_factor_are_learned():
+    settings = Settings(weather=WeatherSettings(mode=WeatherMode.SHADOW, min_share=0.2))
+    engine = Corrector(settings, TZ)
+    engine.set_base(forecast([FIRST, FIRST + timedelta(days=1)]), day_bounds(FIRST, TZ)[0])
+    [run] = weather_runs([FIRST])
+    engine.set_weather(run.forecast, run.captured_at)
+    engine.update(day_bounds(FIRST, TZ)[0] + timedelta(hours=6))
+    engine.update(day_bounds(FIRST, TZ)[1] + timedelta(minutes=5))
+    # 07 and 16 o'clock carry less than a fifth of the strongest hour.
+    assert [hour for hour, _, _ in engine.history[FIRST].weather] == list(range(8, 16))
+    assert [hour for hour, _ in engine.weather_typical_used.hours] == list(range(8, 16))
 
 
 def test_weather_state_survives_a_restart():

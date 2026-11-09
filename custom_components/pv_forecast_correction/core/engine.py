@@ -59,6 +59,7 @@ from .weather import (
     hour_factor,
     hourly_pairs,
     local_hour,
+    strong_hours,
     typical_ratio,
 )
 
@@ -363,24 +364,31 @@ class Corrector:
         if settings.mode is WeatherMode.OFF or self.weather is None or not self.base:
             return
         weather = self.weather.as_dict()
-        typical = self.weather_typical
-        if typical.days_used == 0:
-            # Nothing learned yet: how the two forecasts relate today and tomorrow.
-            pairs = hourly_pairs(self._base_hourly(self.base.points), weather, self.tz)
-            typical = typical_ratio([(date.min, pairs)], settings) if pairs else typical
+        base = self._base_hourly(self.base.points)
+        # How the two forecasts relate today and tomorrow stands in for the hours that
+        # have not been learned yet (all of them before the first learned day).
+        pairs = hourly_pairs(base, weather, self.tz, min_share=settings.min_share)
+        current = WeatherTypical()
+        if pairs:
+            current = replace_stats(
+                typical_ratio([(date.min, pairs)], settings), days_used=0, days=()
+            )
+        learned = self.weather_typical
+        typical = learned.filled_from(current) if learned.days_used else current
         self._weather_typical_used = typical
-        by_day: dict[date, dict[datetime, float]] = {}
-        for hour, kwh in self._base_hourly(self.base.points).items():
-            by_day.setdefault(local_day(hour + HOUR / 2, self.tz), {})[hour] = kwh
-        for hours in by_day.values():
-            peak = max(hours.values(), default=0.0)
-            for hour, kwh in hours.items():
-                point = weather.get(hour)
-                if point is None or kwh < settings.min_share * peak:
-                    continue
-                self._weather_factors[hour] = hour_factor(
-                    point.irradiance, kwh, typical.at(local_hour(hour, self.tz)), settings
-                )
+        for hour in strong_hours(base, self.tz, settings.min_share):
+            point = weather.get(hour)
+            if point is None:
+                continue
+            self._weather_factors[hour] = hour_factor(
+                point.irradiance, base[hour], typical.at(local_hour(hour, self.tz)), settings
+            )
+
+    @property
+    def weather_typical_used(self) -> WeatherTypical:
+        """The typical ratio behind the current weather factors (learned hours, the rest
+        from the current forecasts)."""
+        return self._weather_typical_used
 
     def update(self, now: datetime) -> None:
         """Advance the state to ``now``."""
@@ -474,7 +482,13 @@ class Corrector:
             p for s, p in self.record.items() if prev_start <= s < prev_end
         )
         stats = replace_stats(
-            stats, weather=hourly_pairs(record_hourly, self.weather_record, self.tz)
+            stats,
+            weather=hourly_pairs(
+                record_hourly,
+                self.weather_record,
+                self.tz,
+                min_share=self.settings.weather.min_share,
+            ),
         )
         self.history[previous] = stats
         self.report = self._build_report(previous, stats)

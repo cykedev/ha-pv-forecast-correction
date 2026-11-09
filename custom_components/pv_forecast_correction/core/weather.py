@@ -13,12 +13,13 @@ usually relate:
     w_h = clamp(q_h ** trust, min_factor, max_factor)
 
 ``typical_h`` is the ratio of the two forecasts (of record) over the last days for that
-clock hour, drawn toward the ratio over all hours. When both agree as usual, w is 1 and
-nothing changes; when MOSMIX expects fog or low cloud where the base expects sun, w
+clock hour, drawn toward the ratio over all hours. Only hours that get a factor are
+learned (not the weak hours around sunrise and sunset). When both agree as usual, w is 1
+and nothing changes; when MOSMIX expects fog or low cloud where the base expects sun, w
 drops for exactly those hours, and it rises where MOSMIX expects more sun than usual.
-``trust`` sets how much of the disagreement is believed. Without any learned day the
-typical ratio comes from the current forecasts themselves, so the layer works from the
-first day and sharpens as days accumulate.
+``trust`` sets how much of the disagreement is believed. Hours not learned yet take the
+ratio of the current forecasts themselves, so the layer works from the first day and
+sharpens as days accumulate.
 """
 
 from __future__ import annotations
@@ -28,12 +29,12 @@ import math
 import re
 import zipfile
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from enum import StrEnum
 from typing import Any
 
-from .timeline import as_utc
+from .timeline import as_utc, local_day
 
 HOUR = timedelta(hours=1)
 KJ_PER_KWH = 3600.0
@@ -309,6 +310,16 @@ class WeatherTypical:
     def at(self, hour: int) -> float | None:
         return dict(self.hours).get(hour, self.ratio)
 
+    def filled_from(self, other: WeatherTypical) -> WeatherTypical:
+        """The learned hours, and those of ``other`` for the hours not learned yet.
+
+        The ratio of irradiance to base energy differs by clock hour (the sun's angle on
+        the panels), so the ratio over all learned hours is no stand-in for an hour that
+        was never learned, for instance after a day that was only partly recorded.
+        """
+        hours = {**dict(other.hours), **dict(self.hours)}
+        return replace(self, hours=tuple(sorted(hours.items())))
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "ratio": self.ratio,
@@ -349,10 +360,11 @@ def typical_ratio(
     if total_b <= 0 or total_g <= 0:
         return WeatherTypical()
     ratio = total_g / total_b
-    mean_hour = sum(b / n for _, b, n in sums.values()) / len(sums)
-    weight = settings.shrink_days * mean_hour
+    # Each hour gets ``shrink_days`` pseudo-days of its own size: weak hours around sunrise
+    # and sunset are drawn no harder toward the ratio of all hours than strong ones.
     hours = tuple(
-        (hour, (g + weight * ratio) / (b + weight)) for hour, (g, b, _) in sorted(sums.items())
+        (hour, (g + settings.shrink_days * b / n * ratio) / (b + settings.shrink_days * b / n))
+        for hour, (g, b, n) in sorted(sums.items())
     )
     days_used = len([1 for _, hours_of_day in used if hours_of_day])
     return WeatherTypical(ratio, hours, days_used, tuple(day for day, h in used if h))
@@ -371,16 +383,36 @@ def hour_factor(
     return min(max(value, settings.min_factor), settings.max_factor)
 
 
+def strong_hours(
+    base_kwh: Mapping[datetime, float], tz: tzinfo, min_share: float
+) -> list[datetime]:
+    """Hours with base energy and at least ``min_share`` of their local day's strongest
+    hour: the hours that get a weather factor, and the only ones it learns from."""
+    peaks: dict[date, float] = {}
+    for start, kwh in base_kwh.items():
+        day = local_day(start + HOUR / 2, tz)
+        peaks[day] = max(peaks.get(day, 0.0), kwh)
+    return [
+        start
+        for start in sorted(base_kwh)
+        if base_kwh[start] > 0
+        and base_kwh[start] >= min_share * peaks[local_day(start + HOUR / 2, tz)]
+    ]
+
+
 def hourly_pairs(
     base_kwh: Mapping[datetime, float],
     weather: Mapping[datetime, WeatherPoint],
     tz: tzinfo,
+    *,
+    min_share: float = 0.0,
 ) -> tuple[tuple[int, float, float], ...]:
-    """``(local hour, irradiance, base kWh)`` for every hour known to both."""
+    """``(local hour, irradiance, base kWh)`` for every strong hour (see
+    :func:`strong_hours`) known to both."""
     pairs = []
-    for start in sorted(base_kwh):
+    for start in strong_hours(base_kwh, tz, min_share):
         point = weather.get(start)
-        if point is None or point.irradiance is None or base_kwh[start] <= 0:
+        if point is None or point.irradiance is None:
             continue
         pairs.append((local_hour(start, tz), point.irradiance, base_kwh[start]))
     return tuple(pairs)

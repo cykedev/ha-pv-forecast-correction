@@ -45,6 +45,7 @@ async def async_get_config_entry_diagnostics(
             "error": coordinator.weather_error,
             "issued_at": None if engine.weather is None else engine.weather.issued_at.isoformat(),
             "typical": engine.weather_typical.to_dict(),
+            "typical_used": engine.weather_typical_used.to_dict(),
             "factors": len(engine.weather_record),
         },
         "engine": {
