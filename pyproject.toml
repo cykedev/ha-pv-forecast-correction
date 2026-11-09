@@ -1,6 +1,6 @@
 [project]
 name = "pv-forecast-correction"
-version = "0.5.3"
+version = "0.5.4"
 description = "Home Assistant integration that corrects a PV forecast with measured production."
 readme = "README.md"
 license = "Apache-2.0"
