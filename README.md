@@ -284,12 +284,29 @@ still makes sense: a level-corrected forecast already contains the site's bias.
 
 With the archive on, the integration keeps every snapshot of the base forecast (including
 P10/P90), the measured energy per 5 minutes, curtailment, and the applied factors every 15
-minutes in `<config>/pv_forecast_correction/<entry_id>.db` (SQLite, about 10–20 MB per year).
+minutes in `<config>/pv_forecast_correction/<entry_id>.db` (SQLite, about 10–20 MB per year,
+plus about 20 MB with the weather layer).
 The file is part of Home Assistant backups and stays when the entry is deleted; remove the
 folder by hand if you no longer need it.
 Base forecast lists are not kept by Home Assistant's recorder and forecast providers do not
 keep old runs, so without this archive no variant could be evaluated later against what was
 known at the time.
+
+A consistent copy of the file can be downloaded without file access to the host, with a
+long-lived access token of an administrator:
+
+```bash
+curl --fail --compressed -H "Authorization: Bearer <token>" -o archive.db \
+  "https://<home-assistant>/api/pv_forecast_correction/<entry_id>/archive"
+```
+
+`<entry_id>` is the id of the config entry: pick the entry for one of the services below in
+*Developer tools → Actions* and switch to YAML mode to see it as `config_entry_id`. The copy
+is written to temporary storage and held in memory while it is sent, which takes about
+twice its size for a moment. An archive above 150 MB is therefore refused; take that one
+from a Home Assistant backup. The file contains your production in 5-minute steps, the
+settings, the time zone and, with the weather layer, the weather station: look at it before
+you pass it on.
 
 `tools/replay.py` runs the same correction code over an archive and prints, per variant
 (base, level factor, level factor + fog layer alone with several gates, level factor +
@@ -364,7 +381,8 @@ custom_components/pv_forecast_correction/
   core/          plain Python, no Home Assistant import: format, time grid, measurement,
                  level factor, intraday layer (fog layer, short-term part), scoring,
                  archive, replay, engine
-  *.py           Home Assistant glue: config flow, coordinator, sensors, diagnostics
+  *.py           Home Assistant glue: config flow, coordinator, sensors, diagnostics,
+                 archive download
 tools/replay.py  replay over an archive file
 tests/           core and tool tests (no Home Assistant), integration tests
 ```

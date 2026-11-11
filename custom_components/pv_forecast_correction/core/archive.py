@@ -580,3 +580,28 @@ class Archive:
                     writer.writerow(values)
             written.append(path)
         return written
+
+    def content_size(self) -> int:
+        """Bytes a copy of the archive takes at most: the pages in use, without the space
+        the file keeps after rows were deleted."""
+        try:
+            with self._lock:
+                if self._conn is None:
+                    raise ArchiveError("archive is not open")
+                pages = self._conn.execute("PRAGMA page_count").fetchone()[0]
+                free = self._conn.execute("PRAGMA freelist_count").fetchone()[0]
+                page_size = self._conn.execute("PRAGMA page_size").fetchone()[0]
+        except sqlite3.Error as err:
+            raise ArchiveError(str(err)) from err
+        return (pages - free) * page_size
+
+    def copy_to(self, path: str | Path) -> None:
+        """Write a consistent copy of the archive into a new file at ``path``: one plain
+        SQLite file without a write-ahead log. Writers wait meanwhile."""
+        try:
+            with self._lock:
+                if self._conn is None:
+                    raise ArchiveError("archive is not open")
+                self._conn.execute("VACUUM INTO ?", (str(path),))
+        except sqlite3.Error as err:
+            raise ArchiveError(str(err)) from err

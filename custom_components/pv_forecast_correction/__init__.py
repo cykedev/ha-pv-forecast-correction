@@ -43,6 +43,7 @@ from .const import (
 )
 from .coordinator import CorrectionCoordinator, PvForecastCorrectionConfigEntry, issue_id
 from .core.level import LevelSettings
+from .http import ArchiveDownloadView
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -65,7 +66,7 @@ def _coordinator(hass: HomeAssistant, call: ServiceCall) -> CorrectionCoordinato
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register the services (once for all entries)."""
+    """Register the services and the archive download (once for all entries)."""
 
     async def export(call: ServiceCall) -> ServiceResponse:
         files = await _coordinator(hass, call).async_export()
@@ -100,6 +101,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         schema=_HISTORY_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.http.register_view(ArchiveDownloadView())
     return True
 
 

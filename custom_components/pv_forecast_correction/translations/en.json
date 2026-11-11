@@ -123,7 +123,7 @@
               "archive_retention_days": "Keep for"
             },
             "data_description": {
-              "archive_enabled": "About 10–20 MB per year.",
+              "archive_enabled": "About 10–20 MB per year, plus about 20 MB with the weather layer.",
               "archive_retention_days": "Older data is deleted every night."
             }
           }

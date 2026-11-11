@@ -4,6 +4,7 @@
   "after_dependencies": ["recorder"],
   "codeowners": ["@cykedev"],
   "config_flow": true,
+  "dependencies": ["http"],
   "documentation": "https://github.com/cykedev/ha-pv-forecast-correction",
   "integration_type": "service",
   "iot_class": "calculated",

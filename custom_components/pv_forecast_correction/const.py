@@ -42,6 +42,9 @@ SECTION_WEATHER: Final = "weather"
 SECTION_ARCHIVE: Final = "archive"
 
 DEFAULT_ARCHIVE_RETENTION_DAYS: Final = 400
+MAX_ARCHIVE_COPY_BYTES: Final = 150_000_000
+"""Largest archive that is handed out as a download: the copy is written to temporary
+storage and held in memory while it is sent."""
 
 STORAGE_KEY: Final = DOMAIN
 STORE_VERSION: Final = 1

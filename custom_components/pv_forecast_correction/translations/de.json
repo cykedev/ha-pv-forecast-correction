@@ -123,7 +123,7 @@
               "archive_retention_days": "Aufbewahren für"
             },
             "data_description": {
-              "archive_enabled": "Etwa 10–20 MB pro Jahr.",
+              "archive_enabled": "Etwa 10–20 MB pro Jahr, mit der Wetter-Schicht etwa 20 MB mehr.",
               "archive_retention_days": "Ältere Daten werden jede Nacht gelöscht."
             }
           }

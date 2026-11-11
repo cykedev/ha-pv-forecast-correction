@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import sqlite3
+import tempfile
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -587,6 +588,26 @@ class CorrectionCoordinator(DataUpdateCoordinator[Result]):
                 translation_placeholders={"error": str(err)},
             ) from err
         return [str(path) for path in files]
+
+    async def async_archive_copy(self) -> bytes:
+        """A consistent copy of the archive file as bytes (for the download); raises
+        ``ArchiveError`` when there is no archive or the copy fails."""
+        archive = self.archive
+        if archive is None:
+            raise ArchiveError("archive is not open")
+
+        def copy() -> bytes:
+            # One job owns the temporary folder, so that nothing is left behind when the
+            # request is cancelled while the copy is still being written.
+            with tempfile.TemporaryDirectory() as folder:
+                target = Path(folder) / "archive.db"
+                archive.copy_to(target)
+                return target.read_bytes()
+
+        try:
+            return await self.hass.async_add_executor_job(copy)
+        except OSError as err:
+            raise ArchiveError(str(err)) from err
 
     async def async_learn_from_history(
         self, days: int, forecast_power: str | None = None
