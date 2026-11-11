@@ -10,5 +10,5 @@
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/cykedev/ha-pv-forecast-correction/issues",
   "requirements": [],
-  "version": "0.6.1"
+  "version": "0.7.0"
 }
