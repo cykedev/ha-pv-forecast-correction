@@ -1,12 +1,18 @@
 """Layer A: level factor.
 
-    f = (sum actual + K * mean_daily_forecast) / (sum forecast + K * mean_daily_forecast)
+    f = (sum w * actual + K * mean) / (sum w * forecast + K * mean)
 
 over the daylight intervals of the last N complete days. "forecast" is the forecast of
 record: the value the base forecast held for an interval when the interval began.
-Curtailed intervals and intervals without measurements are left out of both sums. The
-K pseudo-days at ratio 1 shrink the factor toward 1.0, so a fresh install starts
-neutral.
+Curtailed intervals and intervals without measurements are left out of both sums.
+
+Each day is weighted by its age, w = 0.5 ** (age / H) with age 0 for yesterday, so a day
+H days older counts half as much and the factor follows a change of weather regime (a
+foggy spell ending) sooner than with equal weights, at the price of moving more from day
+to day. H = 0 (the default) gives every day the same weight. "mean" is the weighted
+forecast sum divided by the number of days used, so the K pseudo-days at ratio 1 keep the
+same share of the sums as with equal weights; they shrink the factor toward 1.0, so a
+fresh install starts neutral.
 
 The factor can also vary over the day (time-of-day curve): the same sums per local clock
 hour give a factor per hour, shrunk toward the day factor with W pseudo-days of an
@@ -42,6 +48,8 @@ class LevelSettings:
 
     days: int = 14
     shrink_days: float = 1.0
+    half_life_days: float = 0.0
+    """A day this many days older weighs half as much; 0 weighs every day the same."""
     min_factor: float = 0.3
     max_factor: float = 1.5
     by_time: bool = True
@@ -173,7 +181,9 @@ class LevelFactor:
     factor: float = 1.0
     days_used: int = 0
     sum_actual: float = 0.0
+    """Measured energy of the used days, weighted by age."""
     sum_forecast: float = 0.0
+    """Forecast energy of record of the used days, weighted by age."""
     shrink_weight: float = 0.0
     computed_at: datetime | None = None
     clamped: bool = False
@@ -189,7 +199,7 @@ class LevelFactor:
 
     @property
     def raw_ratio(self) -> float | None:
-        """Unshrunk ratio of the used days."""
+        """Unshrunk (weighted) ratio of the used days."""
         return self.sum_actual / self.sum_forecast if self.sum_forecast > 0 else None
 
     def to_dict(self) -> dict[str, Any]:
@@ -241,8 +251,9 @@ def compute_level_factor(
     used = eligible[-settings.days :] if settings.days > 0 else []
     if not used:
         return LevelFactor(computed_at=computed_at)
-    sum_actual = sum(s.actual_kwh for s in used)
-    sum_forecast = sum(s.forecast_kwh for s in used)
+    weights = [_age_weight(today, stats.day, settings.half_life_days) for stats in used]
+    sum_actual = sum(w * s.actual_kwh for w, s in zip(weights, used, strict=True))
+    sum_forecast = sum(w * s.forecast_kwh for w, s in zip(weights, used, strict=True))
     weight = settings.shrink_days * sum_forecast / len(used)
     raw = (sum_actual + weight) / (sum_forecast + weight)
     factor = min(max(raw, settings.min_factor), settings.max_factor)
@@ -260,11 +271,19 @@ def compute_level_factor(
     )
 
 
+def _age_weight(today: date, day: date, half_life_days: float) -> float:
+    """Weight of a day by its age: 1 for yesterday, halved every ``half_life_days``."""
+    if half_life_days <= 0:
+        return 1.0
+    return 0.5 ** (max((today - day).days - 1, 0) / half_life_days)
+
+
 def _time_curve(
     used: list[DayStats], factor: float, settings: LevelSettings
 ) -> tuple[tuple[int, float], ...]:
     """Factor per local clock hour: shrunk toward the day factor, then scaled so that its
-    forecast-weighted mean is the day factor."""
+    forecast-weighted mean is the day factor. The curve only shapes the day, so its days
+    keep equal weights; the age weights act on the level through the day factor."""
     sums: dict[int, list[float]] = {}
     for stats in used:
         for hour, actual, forecast in stats.hours:

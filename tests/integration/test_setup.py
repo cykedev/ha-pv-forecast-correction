@@ -79,6 +79,7 @@ async def test_sensors_publish_the_solcast_format(
     level = hass.states.get("sensor.pv_forecast_correction_level_factor")
     assert float(level.state) == 1.0
     assert level.attributes["status"] == "no_history"
+    assert level.attributes["half_life_days"] == 0.0  # equal weights by default
 
     fog = hass.states.get("sensor.pv_forecast_correction_fog_factor")
     assert float(fog.state) == 1.0
@@ -149,3 +150,5 @@ async def test_options_with_the_old_default_start_up_weight_are_migrated(
     assert old.minor_version == 2
     assert old.options[CONF_LEVEL_SHRINK_DAYS] == 1.0
     assert chosen.options[CONF_LEVEL_SHRINK_DAYS] == 3.0  # chosen by the user: kept
+    # Options saved before the half-life existed load with its default (equal weights).
+    assert old.runtime_data.settings.level.half_life_days == 0.0

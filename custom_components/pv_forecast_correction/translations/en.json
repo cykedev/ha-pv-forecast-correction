@@ -65,6 +65,7 @@
             "data": {
               "level_enabled": "Apply the level factor",
               "level_days": "Days learned from",
+              "level_half_life_days": "Half-life of a day",
               "level_shrink_days": "Start-up weight",
               "level_min": "Lowest factor",
               "level_max": "Highest factor",
@@ -73,6 +74,7 @@
             "data_description": {
               "level_enabled": "Off: the factor is still computed and shown, but not applied.",
               "level_days": "Number of complete past days in the ratio.",
+              "level_half_life_days": "A day this many days older counts half as much, so the factor follows a change of weather (a foggy spell ending) sooner. 0: every day counts the same.",
               "level_shrink_days": "Days at ratio 1.0 added to the ratio, so a fresh install starts neutral and gets close to the learned value within the first week.",
               "level_min": "The factor never goes below this.",
               "level_max": "The factor never goes above this.",
@@ -275,11 +277,14 @@
           "days_wanted": {
             "name": "Days configured"
           },
+          "half_life_days": {
+            "name": "Half-life of a day"
+          },
           "sum_actual": {
-            "name": "Measured energy"
+            "name": "Measured energy (weighted)"
           },
           "sum_forecast": {
-            "name": "Forecast energy"
+            "name": "Forecast energy (weighted)"
           },
           "raw_ratio": {
             "name": "Measured ÷ forecast"

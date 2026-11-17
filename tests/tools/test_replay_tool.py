@@ -39,8 +39,28 @@ def test_replay_prints_tables_and_verdicts(tmp_path, capsys):
     assert "## Layer A (level) against the base" in output
     assert "Verdict: PASS" in output
     assert "## Days" in output
-    assert "Level factor: 7 days" in output
+    assert "Level factor: 7 days, half-life 0 days" in output  # older archive: equal weights
     assert "lowest factor 0.3" in output
+
+
+def test_replay_uses_the_stored_half_life_and_the_override(tmp_path, capsys):
+    from datetime import date
+
+    days = day_range(date(2026, 6, 1), 10)
+    archive = Archive(tmp_path / "archive.db")
+    archive.open()
+    archive.set_meta("time_zone", "Europe/Berlin")
+    archive.set_meta("settings", '{"level": {"days": 7, "half_life_days": 7}}')
+    for snapshot in daily_snapshots(days):
+        archive.add_snapshot(snapshot.captured_at, snapshot.forecast, refreshed=True)
+    archive.add_bins(bins_from([p for day in days for p in curve(day)], 0.75))
+    archive.close()
+
+    tool = load_tool()
+    assert tool.main([str(tmp_path / "archive.db")]) == 0
+    assert "half-life 7 days" in capsys.readouterr().out
+    assert tool.main([str(tmp_path / "archive.db"), "--half-life", "0"]) == 0
+    assert "half-life 0 days" in capsys.readouterr().out
 
 
 def test_empty_archive_reports_no_days(tmp_path, capsys):

@@ -29,6 +29,7 @@ from custom_components.pv_forecast_correction.const import (
     CONF_LEVEL_BY_TIME,
     CONF_LEVEL_DAYS,
     CONF_LEVEL_ENABLED,
+    CONF_LEVEL_HALF_LIFE,
     CONF_LEVEL_MAX,
     CONF_LEVEL_MIN,
     CONF_LEVEL_SHRINK_DAYS,
@@ -151,6 +152,7 @@ def options_input(**changes: Any) -> dict[str, Any]:
             CONF_LEVEL_ENABLED: True,
             CONF_LEVEL_BY_TIME: False,
             CONF_LEVEL_DAYS: 10,
+            CONF_LEVEL_HALF_LIFE: 3.0,
             CONF_LEVEL_SHRINK_DAYS: 1.0,
             CONF_LEVEL_MIN: 0.4,
             CONF_LEVEL_MAX: 1.2,
@@ -198,6 +200,7 @@ async def test_options_change_inputs_and_settings(
 
     coordinator = config_entry.runtime_data
     assert coordinator.settings.level.days == 10
+    assert coordinator.settings.level.half_life_days == 3.0
     assert coordinator.settings.level.by_time is False
     assert coordinator.settings.fog.mode.value == "on"
     assert coordinator.settings.fog.gate.min_confidence is None

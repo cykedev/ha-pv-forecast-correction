@@ -39,18 +39,30 @@ provider cannot know: shading, soiling, inverter limits, panel ageing, a site pa
 is slightly off. The level factor removes that bias:
 
 ```
-f = (Σ measured + K · F̄) / (Σ forecast + K · F̄)      over the last N complete days
-corrected = f × base                                 for today and tomorrow
+f = (Σ w·measured + K · F̄) / (Σ w·forecast + K · F̄)   over the last N complete days
+w = 1, or 0.5 ^ (age / H) with a half-life H          age 0 for yesterday
+corrected = f × base                                  for today and tomorrow
 ```
 
 - **Forecast of record.** "Forecast" is the value the base forecast held for an interval when
   that interval began, i.e. exactly what was published at the time — not a later revision.
 - **Complete days only.** A day counts when at most 10 % of its daylight intervals lack
   measurements. Curtailed intervals (export limit, derating) are left out of both sums.
-- **Start-up weight.** K days at ratio 1.0 (F̄ is the mean daily forecast) are added, so a fresh
-  install starts neutral and gets close to the full factor within the first week. Defaults:
-  N = 14, K = 1, limits 0.3–1.5. On the reference data K = 1 lowered the error by 6–7 %
-  against K = 2; it still keeps a single odd first day from taking over.
+- **Recent days can weigh more** (off by default). With a half-life H, a day H days older
+  counts half as much, so after a change of weather regime — a foggy spell that ends, or
+  begins — the factor follows within days instead of carrying the old regime for two weeks.
+  The price: it moves more from day to day, and a few days with snow on the panels pull it
+  down harder. On two years of reference data (a weather-model base, 721 days) H = 7 was
+  0–1 % worse than equal weights in every season, and the largest day-to-day change of the
+  factor grew from 0.10 to 0.18. Over an autumn change from fog to normal weather (real
+  Solcast forecasts, eight days replayed with the integration) it was about as good:
+  day-ahead error −1 %, 07:00 day total +2 %. Consider it where the bias changes with the
+  weather regime; equal weights (H = 0) stay the default.
+- **Start-up weight.** K days at ratio 1.0 (F̄ is the weighted mean daily forecast,
+  Σ w·forecast divided by the number of days used) are added, so a fresh install starts
+  neutral and gets close to the full factor within the first week. Defaults: N = 14, K = 1,
+  limits 0.3–1.5. On the reference data K = 1 lowered the error by 6–7 % against K = 2 (with
+  equal weights); it still keeps a single odd first day from taking over.
 - **Once per night.** The factor is computed after midnight and stays constant during the
   day, so consumers see a stable number.
 - **Works with the base's own corrections.** The factor learns from the forecast as it was
@@ -59,9 +71,9 @@ corrected = f × base                                 for today and tomorrow
   outcome, not a failure.
 - **By time of day** (on by default). The same sums per clock hour give a factor for every
   hour of the day, drawn toward the day factor by two days' worth of an average daylight
-  hour. Hours that regularly run below or above the rest of the day — fog that lingers in
-  the morning in winter, shade at low sun that the base does not model — get their own
-  value; hours with little energy stay close to the day factor. The curve only shapes the
+  hour, over the same days with equal weights. Hours that regularly run below or above the
+  rest of the day — fog that lingers in the morning in winter, shade at low sun that the
+  base does not model — get their own value; hours with little energy stay close to the day factor. The curve only shapes the
   day: it is scaled so that its mean, weighted with each hour's forecast energy, is the
   published factor f. On the reference data it lowered the rest-of-day error by 5 % over a
   summer (107 days) and made no measurable difference over nine autumn days.
@@ -212,6 +224,7 @@ integration). Several entries are possible, e.g. one per base forecast.
 | Level factor | Apply | on | Off: computed and shown, not applied. |
 | | Factor by time of day | on | One factor per clock hour instead of one per day. |
 | | Days learned from | 14 | Complete past days in the ratio. |
+| | Half-life of a day | 0 (off) | A day this many days older counts half as much; 0: all days the same. |
 | | Start-up weight | 1 day | Days at ratio 1.0 added to the ratio. |
 | | Lowest / highest factor | 0.3 / 1.5 | Limits of the factor. |
 | Intraday layer | Mode | shadow | `off`, `shadow` (compute, show and score) or `on` (apply). |
@@ -241,7 +254,7 @@ too: the integration follows the new ID.
 | `sensor.pv_forecast_correction_today` | corrected day total (kWh) | `estimate`, `estimate10`, `estimate90`, `detailedForecast`, `detailedHourly`, `actual_so_far`, `base_estimate*`, `level_factor`, `fog_factor`, `intraday_factor` (intraday layer on the rest of today, when on) |
 | `sensor.pv_forecast_correction_remaining_today` | corrected rest of today (kWh) | `estimate`, `estimate10`, `estimate90`, `detailedForecast` (rest only), `base_estimate*` |
 | `sensor.pv_forecast_correction_tomorrow` | corrected total tomorrow (kWh) | as *today*, without `actual_so_far`, `fog_factor` and `intraday_factor` |
-| `sensor.pv_forecast_correction_level_factor` | f (day factor) | `status`, `days_used`, `curve` (factor per hour), `sum_actual`, `sum_forecast`, `raw_ratio`, `shrink_weight`, `daily_ratios`, `imported_days`, `computed_at` |
+| `sensor.pv_forecast_correction_level_factor` | f (day factor) | `status`, `days_used`, `half_life_days`, `curve` (factor per hour), `sum_actual`, `sum_forecast` (both weighted by age), `raw_ratio`, `shrink_weight`, `daily_ratios`, `imported_days`, `computed_at` |
 | `sensor.pv_forecast_correction_fog_factor` | fog factor applied (1 when inactive or not used) | `mode`, `reason`, `gate`, `k_shadow`, `k_morning`, `k_recent`, `base_confidence`, `active_since`, `fog_used` (fog layer allowed today: nightly choice or setting), `short_term`, `k_hour`, `next_hour_factor`, `rest_factor` (intraday layer on the next hour and the rest of today, applied or in shadow), `tuning_days`, `tuning_error_short_term`, `tuning_error_with_fog` |
 | `sensor.pv_forecast_correction_weather_factor` | weather factor for the coming hours of sun (rest of today; after sunset, tomorrow) | `mode`, `status`, `station`, `station_distance_km`, `issued_at`, `tomorrow_factor`, `rest_today_kwh`, `tomorrow_kwh`, `factors_today`, `factors_tomorrow`, `sunshine_*`, `fog_probability_*`, `days_learned`, `forecast_hours` (per hour of today and tomorrow: `period_start`, `pv_corrected` and `pv_estimate` in kW without and with the weather factor, `factor`, `sunshine_min`, `fog`, `low_cloud`; not recorded) |
 | `sensor.pv_forecast_correction_error_base` | yesterday's rest-of-day MAE of the base (kWh) | `rest_of_day` per time, `day_error`, `day_ahead_error`, `day_p10_held`, `day_p90_held`, `day_ahead_p10_held`, `status` |

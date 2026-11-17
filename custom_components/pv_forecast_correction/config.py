@@ -23,6 +23,7 @@ from .const import (
     CONF_LEVEL_BY_TIME,
     CONF_LEVEL_DAYS,
     CONF_LEVEL_ENABLED,
+    CONF_LEVEL_HALF_LIFE,
     CONF_LEVEL_MAX,
     CONF_LEVEL_MIN,
     CONF_LEVEL_SHRINK_DAYS,
@@ -45,6 +46,7 @@ DEFAULTS: dict[str, Any] = {
     CONF_LEVEL_ENABLED: True,
     CONF_LEVEL_DAYS: _LEVEL.days,
     CONF_LEVEL_SHRINK_DAYS: _LEVEL.shrink_days,
+    CONF_LEVEL_HALF_LIFE: _LEVEL.half_life_days,
     CONF_LEVEL_MIN: _LEVEL.min_factor,
     CONF_LEVEL_MAX: _LEVEL.max_factor,
     CONF_LEVEL_BY_TIME: _LEVEL.by_time,
@@ -113,6 +115,7 @@ def settings_from(config: Mapping[str, Any]) -> Settings:
         level = LevelSettings(
             days=int(config[CONF_LEVEL_DAYS]),
             shrink_days=float(config[CONF_LEVEL_SHRINK_DAYS]),
+            half_life_days=float(config[CONF_LEVEL_HALF_LIFE]),
             min_factor=float(config[CONF_LEVEL_MIN]),
             max_factor=float(config[CONF_LEVEL_MAX]),
             by_time=bool(config[CONF_LEVEL_BY_TIME]),

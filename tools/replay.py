@@ -206,6 +206,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--to", dest="last", type=date.fromisoformat, help="last day")
     parser.add_argument("--level-days", type=int, help="days learned from")
     parser.add_argument("--shrink-days", type=float, help="start-up weight in days")
+    parser.add_argument(
+        "--half-life", type=float, help="half-life of a day in the level factor (0: equal weights)"
+    )
     parser.add_argument("--level-min", type=float, help="lowest level factor")
     parser.add_argument("--level-max", type=float, help="highest level factor")
     parser.add_argument("--fog-recent-hours", type=float, help="recent window of the fog layer")
@@ -240,6 +243,9 @@ def main(argv: list[str] | None = None) -> int:
         shrink_days=pick(
             args.shrink_days, stored_level.get("shrink_days"), LevelSettings().shrink_days
         ),
+        # Archives written before the half-life existed ran with equal weights. The archive
+        # keeps only the latest settings: replay days before a change with --half-life.
+        half_life_days=pick(args.half_life, stored_level.get("half_life_days"), 0.0),
         min_factor=pick(args.level_min, stored_level.get("min_factor"), LevelSettings().min_factor),
         max_factor=pick(args.level_max, stored_level.get("max_factor"), LevelSettings().max_factor),
         by_time=not args.one_factor
@@ -330,7 +336,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"# {args.title or 'Replay ' + str(args.archive.name)}\n")
     print(
-        f"Level factor: {level.days} days, start-up weight {level.shrink_days:g} days, "
+        f"Level factor: {level.days} days, half-life {level.half_life_days:g} days, "
+        f"start-up weight {level.shrink_days:g} days, "
         f"limits {level.min_factor:g}-{level.max_factor:g}, "
         f"{'by time of day' if level.by_time else 'one factor per day'}. Fog layer: recent window "
         f"{fog_base.recent_hours:g} h, lowest factor {fog_base.min_factor:g}. "

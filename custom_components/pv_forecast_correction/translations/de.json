@@ -65,6 +65,7 @@
             "data": {
               "level_enabled": "Niveau-Faktor anwenden",
               "level_days": "Gelernt aus Tagen",
+              "level_half_life_days": "Halbwertszeit eines Tages",
               "level_shrink_days": "Anlaufgewicht",
               "level_min": "Kleinster Faktor",
               "level_max": "Größter Faktor",
@@ -73,6 +74,7 @@
             "data_description": {
               "level_enabled": "Aus: Der Faktor wird weiter berechnet und angezeigt, aber nicht angewendet.",
               "level_days": "Anzahl vollständiger vergangener Tage im Verhältnis.",
+              "level_half_life_days": "Ein Tag, der so viele Tage älter ist, zählt nur halb so viel – der Faktor folgt einem Wetterwechsel (Ende einer Nebelphase) schneller. 0: Jeder Tag zählt gleich.",
               "level_shrink_days": "Tage mit Verhältnis 1.0, die hinzugerechnet werden – eine neue Installation startet neutral und kommt in der ersten Woche nah an den gelernten Wert.",
               "level_min": "Der Faktor wird nie kleiner.",
               "level_max": "Der Faktor wird nie größer.",
@@ -275,11 +277,14 @@
           "days_wanted": {
             "name": "Eingestellte Tage"
           },
+          "half_life_days": {
+            "name": "Halbwertszeit eines Tages"
+          },
           "sum_actual": {
-            "name": "Gemessene Energie"
+            "name": "Gemessene Energie (gewichtet)"
           },
           "sum_forecast": {
-            "name": "Prognostizierte Energie"
+            "name": "Prognostizierte Energie (gewichtet)"
           },
           "raw_ratio": {
             "name": "Gemessen ÷ Prognose"

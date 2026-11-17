@@ -252,6 +252,7 @@ SENSORS: tuple[CorrectionSensorDescription, ...] = (
             "applied": c.settings.level_enabled,
             "days_used": r.level.days_used,
             "days_wanted": c.settings.level.days,
+            "half_life_days": c.settings.level.half_life_days,
             "sum_actual": _round(r.level.sum_actual),
             "sum_forecast": _round(r.level.sum_forecast),
             "raw_ratio": _round(r.level.raw_ratio),

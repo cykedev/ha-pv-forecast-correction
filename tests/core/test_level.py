@@ -55,6 +55,45 @@ def test_shrinkage_formula():
     assert level.raw_ratio == pytest.approx(0.7)
 
 
+def test_recent_days_weigh_more():
+    # Yesterday weight 1, two days ago 0.5, three days ago 0.25 (half-life 1 day).
+    history = [
+        stats(TODAY - timedelta(days=1), 9.0, 10.0),
+        stats(TODAY - timedelta(days=2), 5.0, 10.0),
+        stats(TODAY - timedelta(days=3), 5.0, 10.0),
+    ]
+    level = compute_level_factor(history, TODAY, LevelSettings(half_life_days=1, shrink_days=0))
+    assert level.sum_actual == pytest.approx(9.0 + 2.5 + 1.25)
+    assert level.sum_forecast == pytest.approx(17.5)
+    assert level.factor == pytest.approx(12.75 / 17.5)
+    equal = compute_level_factor(history, TODAY, LevelSettings(half_life_days=0, shrink_days=0))
+    assert equal.factor == pytest.approx(19 / 30)
+
+
+def test_weights_follow_the_calendar_and_keep_the_start_up_share():
+    # A gap does not make an older day count as recent.
+    history = [
+        stats(TODAY - timedelta(days=1), 8.0, 10.0),
+        stats(TODAY - timedelta(days=6), 4.0, 10.0),
+    ]
+    level = compute_level_factor(history, TODAY, LevelSettings(half_life_days=5, shrink_days=1))
+    w = 0.5 ** (5 / 5)
+    weighted_forecast = 10.0 + w * 10.0
+    # The K pseudo-days keep their share of the sums: K * weighted forecast / days used.
+    assert level.shrink_weight == pytest.approx(weighted_forecast / 2)
+    expected = (8.0 + w * 4.0 + weighted_forecast / 2) / (weighted_forecast * 1.5)
+    assert level.factor == pytest.approx(expected)
+
+
+def test_constant_ratio_is_kept_by_any_half_life():
+    history = [stats(TODAY - timedelta(days=d), 6.0, 10.0) for d in range(1, 15)]
+    for half_life in (0, 2, 5, 30):
+        level = compute_level_factor(
+            history, TODAY, LevelSettings(half_life_days=half_life, shrink_days=0)
+        )
+        assert level.factor == pytest.approx(0.6)
+
+
 def test_uses_last_n_complete_days_only():
     history = [stats(TODAY - timedelta(days=d), 5.0, 10.0) for d in range(1, 20)]
     history.append(stats(TODAY - timedelta(days=1), 0.0, 10.0, missing=10))  # incomplete
@@ -111,17 +150,23 @@ def test_time_curve_follows_the_hours_and_shrinks_weak_ones():
     assert level.at(3) == level.factor  # hours without data use the day factor
 
 
-def test_days_without_hours_do_not_take_over_the_level():
+@pytest.mark.parametrize("half_life", [0.0, 5.0])
+def test_days_without_hours_do_not_take_over_the_level(half_life):
     """Imported days known only by their sums set the level with the rest; the one day
-    with hours only shapes it."""
+    with hours only shapes it. With age weights, yesterday counts more, but the curve
+    still averages to the published factor."""
     history = [DayStats.imported_sums(TODAY - timedelta(days=d), 7.0, 10.0) for d in range(2, 15)]
     history.append(hourly(TODAY - timedelta(days=1), 0.3, 0.3, dawn=0.3))
-    level = compute_level_factor(history, TODAY, LevelSettings(by_time=True))
+    settings = LevelSettings(by_time=True, half_life_days=half_life)
+    level = compute_level_factor(history, TODAY, settings)
     weights = {h: f for h, _, f in history[-1].hours}
     curve = dict(level.curve)
     mean = sum(curve[h] * w for h, w in weights.items()) / sum(weights.values())
     assert mean == pytest.approx(level.factor, rel=1e-6)
-    assert level.factor > 0.65
+    equal = compute_level_factor(history, TODAY, LevelSettings(by_time=True))
+    assert equal.factor > 0.65
+    if half_life:
+        assert level.factor < equal.factor
 
 
 def test_time_curve_off_or_without_hourly_data():
